@@ -1,19 +1,25 @@
 #![feature(let_chains)]
 
 mod chunks;
+mod config;
+mod consts;
 mod keyboard;
 
 use anyhow::{Result, anyhow};
-use enumn::N;
 use futures::future;
-use keyboard::Keyboard;
-use palette::Srgb;
+use palette::{encoding::Srgb, rgb::Rgb};
 use std::{fs, sync::Arc};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::Mutex,
 };
+
+use consts::{
+    DEVICE_TYPE_KEYBOARD, MODE_FLAG_HAS_MODE_SPECIFIC_COLOR, MODE_FLAG_HAS_PER_LED_COLOR,
+    MODE_FLAG_HAS_RANDOM_COLOR, Request, ZONE_TYPE_MATRIX,
+};
+use keyboard::Keyboard;
 
 const OPENRGB_PROTOCOL_VERSION: u32 = 0x3;
 
@@ -55,27 +61,6 @@ async fn main() -> Result<()> {
     }
 }
 
-#[derive(PartialEq, Debug, N)]
-#[repr(u32)]
-enum Request {
-    GetControllerCount = 0,
-    GetControllerData = 1,
-    GetProtocolVersion = 40,
-    SetClientName = 50,
-    DeviceListUpdated = 100,
-    GetProfileList = 150,
-    SaveProfile = 151,
-    LoadProfile = 152,
-    DeleteProfile = 153,
-    ResizeZone = 1000,
-    UpdateLeds = 1050,
-    UpdateZoneLeds = 1051,
-    UpdateSingleLed = 1052,
-    SetCustomMode = 1100,
-    UpdateMode = 1101,
-    SaveMode = 1102,
-}
-
 async fn handle_connection(mut stream: TcpStream, keyboards: &Vec<Mutex<Keyboard>>) -> Result<()> {
     loop {
         let magic = stream.read_u32_le().await?;
@@ -108,6 +93,100 @@ async fn handle_request(
             let count: u32 = keyboards.len() as u32;
             stream.write_response(kind, &count.to_le_bytes()).await?;
         }
+        Some(Request::GetControllerData) => {
+            if length > 0 {
+                stream.read_u32_le().await?;
+            }
+
+            let config = keyboard.config();
+            let id = format!("{:04x}:{:04x}", config.vendor_id, config.product_id);
+
+            let mut buffer = Vec::new();
+            buffer.extend_from_slice(&0u32.to_le_bytes()); // Data size (will update later)
+
+            buffer.extend_from_slice(&DEVICE_TYPE_KEYBOARD.to_le_bytes());
+            buffer.extend_from_str(&config.name);
+            buffer.extend_from_str("Unknown");
+            buffer.extend_from_str(&format!("{} via ColorHoster", &config.name));
+            buffer.extend_from_str(env!("CARGO_PKG_VERSION"));
+            buffer.extend_from_str(&id);
+            buffer.extend_from_str(&format!("HID: {}", id));
+
+            buffer.extend_from_slice(&(config.effects.len() as u16).to_le_bytes());
+            buffer.extend_from_slice(&keyboard.mode().await.to_le_bytes());
+
+            for (name, id, flags) in &config.effects {
+                buffer.extend_from_str(name);
+
+                buffer.extend_from_slice(&id.to_le_bytes());
+                buffer.extend_from_slice(&flags.to_le_bytes());
+                buffer.extend_from_slice(&config.speed.0.to_le_bytes());
+                buffer.extend_from_slice(&config.speed.1.to_le_bytes());
+                buffer.extend_from_slice(&config.brightness.0.to_le_bytes());
+                buffer.extend_from_slice(&config.brightness.1.to_le_bytes());
+
+                let mode_colors: u32 = 1;
+                buffer.extend_from_slice(&mode_colors.to_le_bytes());
+                buffer.extend_from_slice(&mode_colors.to_le_bytes());
+                buffer.extend_from_slice(&keyboard.speed().await.to_le_bytes());
+                buffer.extend_from_slice(&keyboard.brightness().await.to_le_bytes());
+                buffer.extend_from_slice(&(0u32).to_le_bytes()); // Direction is constant
+
+                let color_mode = if flags & MODE_FLAG_HAS_PER_LED_COLOR != 0 {
+                    1u32
+                } else if flags & MODE_FLAG_HAS_MODE_SPECIFIC_COLOR != 0 {
+                    2u32
+                } else if flags & MODE_FLAG_HAS_RANDOM_COLOR != 0 {
+                    3u32
+                } else {
+                    0u32
+                };
+                buffer.extend_from_slice(&color_mode.to_le_bytes());
+
+                // TODO: I guess in per-key mode we should send colors for all keys instead (or not, see color section)
+                buffer.extend_from_slice(&(mode_colors as u16).to_le_bytes());
+                buffer.extend_from_color(&(keyboard.color().await));
+            }
+
+            // TODO: should we support more than a single zone?
+            buffer.extend_from_slice(&(1u16).to_le_bytes());
+
+            let leds_count = config.count_leds();
+            buffer.extend_from_str("Keyboard");
+            buffer.extend_from_slice(&ZONE_TYPE_MATRIX.to_le_bytes());
+            buffer.extend_from_slice(&leds_count.to_le_bytes());
+            buffer.extend_from_slice(&leds_count.to_le_bytes());
+            buffer.extend_from_slice(&leds_count.to_le_bytes());
+
+            let matrix_data_size = (config.matrix.0 * config.matrix.1 * 4) + 8;
+            buffer.extend_from_slice(&(matrix_data_size as u16).to_le_bytes());
+            buffer.extend_from_slice(&config.matrix.1.to_le_bytes());
+            buffer.extend_from_slice(&config.matrix.0.to_le_bytes());
+
+            let mut led_matrix = vec![0xFFFFFFFF; (config.matrix.0 * config.matrix.1) as usize];
+            for (led, (row, col)) in config.leds.iter().filter_map(|led| *led) {
+                led_matrix[row as usize * config.matrix.0 as usize + col as usize] = led as u32;
+            }
+            buffer.extend_from_u32s(&led_matrix);
+
+            buffer.extend_from_slice(&(leds_count as u16).to_le_bytes());
+            for (i, (led, _)) in config.leds.iter().filter_map(|led| *led).enumerate() {
+                // TODO: use name from actual keyboard keymap
+                buffer.extend_from_str(&format!("LED {}", i));
+                buffer.extend_from_slice(&(led as u32).to_le_bytes());
+            }
+
+            // TODO: are these per-key colors?
+            buffer.extend_from_slice(&(leds_count as u16).to_le_bytes());
+            for color in keyboard.colors() {
+                buffer.extend_from_color(&color);
+            }
+
+            let buffer_length = buffer.len() as u32;
+            buffer[0..4].copy_from_slice(&buffer_length.to_le_bytes());
+
+            stream.write_response(kind, &buffer).await?;
+        }
         Some(Request::GetProtocolVersion) => {
             let _client_version = stream.read_u32_le().await?;
             let version = OPENRGB_PROTOCOL_VERSION.to_le_bytes();
@@ -127,7 +206,7 @@ async fn handle_request(
         Some(Request::UpdateLeds) => {
             let _data_length = stream.read_u32_le().await?;
             let led_count = stream.read_u16_le().await?;
-            let mut colors: Vec<Srgb> = Vec::new();
+            let mut colors: Vec<Rgb<Srgb, f32>> = Vec::new();
             for _ in 0..led_count {
                 colors.push(stream.read_rgb().await?);
             }
@@ -141,16 +220,43 @@ async fn handle_request(
     anyhow::Ok(())
 }
 
+trait BufferExtensions {
+    fn extend_from_str(&mut self, str: &str);
+    fn extend_from_color(&mut self, color: &Rgb<Srgb, u8>);
+    fn extend_from_u32s(&mut self, values: &[u32]);
+}
+
+impl BufferExtensions for Vec<u8> {
+    fn extend_from_str(&mut self, str: &str) {
+        self.extend_from_slice(&((str.len() + 1) as u16).to_le_bytes());
+        self.extend_from_slice(str.as_bytes());
+        self.push(0);
+    }
+
+    fn extend_from_color(&mut self, color: &Rgb<Srgb, u8>) {
+        self.extend_from_slice(&[color.red, color.green, color.blue, 0]);
+    }
+
+    fn extend_from_u32s(&mut self, values: &[u32]) {
+        self.extend_from_slice(
+            &values
+                .iter()
+                .flat_map(|x| x.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+    }
+}
+
 trait StreamExtensions {
-    async fn read_rgb(&mut self) -> Result<Srgb<f32>>;
+    async fn read_rgb(&mut self) -> Result<Rgb<Srgb, f32>>;
     async fn write_response(&mut self, kind: u32, data: &[u8]) -> Result<()>;
 }
 
 impl StreamExtensions for TcpStream {
-    async fn read_rgb(&mut self) -> Result<Srgb<f32>> {
+    async fn read_rgb(&mut self) -> Result<Rgb<Srgb, f32>> {
         let mut buf: [u8; 4] = [0; 4];
         self.read_exact(&mut buf).await?;
-        Ok(Srgb::new(buf[0], buf[1], buf[2]).into_format())
+        Ok(Rgb::new(buf[0], buf[1], buf[2]).into_format())
     }
 
     async fn write_response(&mut self, kind: u32, data: &[u8]) -> Result<()> {

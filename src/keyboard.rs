@@ -2,20 +2,17 @@ use anyhow::{Result, anyhow};
 use async_hid::{AccessMode, Device, DeviceInfo};
 use futures::future::{self};
 use futures_lite::StreamExt;
-use palette::{Hsv, IntoColor, rgb::Rgb};
-use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::Value;
+use palette::{Hsv, IntoColor, encoding::Srgb, rgb::Rgb};
 use std::borrow::Borrow;
 
-use crate::chunks::ChunkChanged;
-
-const QMK_USAGE_PAGE: u16 = 0xFF60;
-const QMK_USAGE_ID: u16 = 0x61;
-
-const QMK_CUSTOM_SET_COMMAND: u8 = 0x07;
-const QMK_CUSTOM_CHANNEL: u8 = 0x0;
-const QMK_COMMAND_UPDATE_HS: u8 = 0x1;
-const QMK_COMMAND_UPDATE_BRIGHTNESS: u8 = 0x2;
+use crate::{
+    chunks::ChunkChanged,
+    config::Config,
+    consts::{
+        QMK_COMMAND_UPDATE_BRIGHTNESS, QMK_COMMAND_UPDATE_HS, QMK_CUSTOM_CHANNEL,
+        QMK_CUSTOM_SET_COMMAND, QMK_USAGE_ID, QMK_USAGE_PAGE,
+    },
+};
 
 pub struct Keyboard {
     config: Config,
@@ -110,18 +107,46 @@ impl Keyboard {
             .open(AccessMode::ReadWrite)
             .await?;
 
-        let max_led = config.leds.iter().max().unwrap_or(&Some(0)).unwrap_or(0) + 1;
-
+        let leds = config.count_leds() as usize;
         Ok(Keyboard {
             config,
             device,
-            colors: (vec![(0, 0); max_led as usize], vec![255; max_led as usize]),
+            colors: (vec![(0, 0); leds], vec![255; leds]),
         })
     }
 
     pub async fn from_str(json_str: &str) -> Result<Keyboard> {
-        let config: Config = serde_json::from_str(json_str)?;
+        let config: Config = Config::from_str(json_str)?;
         return Keyboard::from_config(config).await;
+    }
+
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+
+    pub async fn mode(&self) -> i32 {
+        0 // TODO: request from the device
+    }
+
+    pub async fn speed(&self) -> u32 {
+        63 // TODO: request from the device
+    }
+
+    pub async fn brightness(&self) -> u32 {
+        255 // TODO: request from the device
+    }
+
+    pub async fn color(&self) -> Rgb<Srgb, u8> {
+        Rgb::new(255, 255, 255)
+    }
+
+    pub fn colors(&self) -> Vec<Rgb<Srgb, u8>> {
+        let colors = self.colors.0.iter().zip(&self.colors.1).map(|((h, s), v)| {
+            let rgb: Rgb = Hsv::new(*h, *s, *v).into_format().into_color();
+            return rgb.into_format();
+        });
+
+        return colors.collect();
     }
 }
 
@@ -129,61 +154,6 @@ impl Borrow<str> for Keyboard {
     fn borrow(&self) -> &str {
         &self.config.name
     }
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct Config {
-    name: String,
-    #[serde(rename = "vendorId", deserialize_with = "hex_to_u32")]
-    vendor_id: u16,
-    #[serde(rename = "productId", deserialize_with = "hex_to_u32")]
-    product_id: u16,
-    #[serde(rename = "layouts", deserialize_with = "layouts_to_leds")]
-    leds: Vec<Option<u8>>,
-}
-
-fn hex_to_u32<'de, D>(deserializer: D) -> Result<u16, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s = String::deserialize(deserializer)?;
-    u16::from_str_radix(&s[2..], 16).map_err(serde::de::Error::custom)
-}
-
-#[derive(Deserialize)]
-struct Layouts {
-    keymap: Vec<Vec<Value>>,
-}
-
-fn layouts_to_leds<'de, D>(deserializer: D) -> Result<Vec<Option<u8>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let layouts = Layouts::deserialize(deserializer)?;
-    let mut leds = Vec::new();
-
-    for element in layouts.keymap.iter().flatten() {
-        if let Value::String(key) = element {
-            let mut flags = key.split('\n');
-            let led = flags
-                .nth(1)
-                .and_then(|x| x.strip_prefix("l"))
-                .and_then(|x| x.parse::<u8>().ok())
-                .and_then(|x| {
-                    // Skip LEDs for encoder keys
-                    if let Some(encoder) = flags.nth(7)
-                        && encoder.starts_with("e")
-                    {
-                        return None;
-                    }
-                    Some(x)
-                });
-
-            leds.push(led);
-        }
-    }
-
-    Ok(leds)
 }
 
 trait AsBytes {
