@@ -1,0 +1,15 @@
+[package]
+name = "ColorHoster"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.97"
+async-hid = "0.2.0"
+enumn = "0.1.14"
+futures = "0.3.31"
+futures-lite = "2.6.0"
+palette = "0.7.6"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+tokio = { version = "1.44.1", features = ["full"] }
