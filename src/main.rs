@@ -113,7 +113,7 @@ async fn handle_request(
             buffer.extend_from_str(&format!("HID: {}", id));
 
             buffer.extend_from_slice(&(config.effects.len() as u16).to_le_bytes());
-            buffer.extend_from_slice(&keyboard.mode().await.to_le_bytes());
+            buffer.extend_from_slice(&(keyboard.effect() as i32).to_le_bytes());
 
             for (name, id, flags) in &config.effects {
                 buffer.extend_from_str(name);
@@ -128,8 +128,8 @@ async fn handle_request(
                 let mode_colors: u32 = 1;
                 buffer.extend_from_slice(&mode_colors.to_le_bytes());
                 buffer.extend_from_slice(&mode_colors.to_le_bytes());
-                buffer.extend_from_slice(&keyboard.speed().await.to_le_bytes());
-                buffer.extend_from_slice(&keyboard.brightness().await.to_le_bytes());
+                buffer.extend_from_slice(&(keyboard.speed() as u32).to_le_bytes());
+                buffer.extend_from_slice(&(keyboard.brightness() as u32).to_le_bytes());
                 buffer.extend_from_slice(&(0u32).to_le_bytes()); // Direction is constant
 
                 let color_mode = if flags & MODE_FLAG_HAS_PER_LED_COLOR != 0 {
@@ -145,7 +145,7 @@ async fn handle_request(
 
                 // TODO: I guess in per-key mode we should send colors for all keys instead (or not, see color section)
                 buffer.extend_from_slice(&(mode_colors as u16).to_le_bytes());
-                buffer.extend_from_color(&(keyboard.color().await));
+                buffer.extend_from_color(&keyboard.color());
             }
 
             // TODO: should we support more than a single zone?
@@ -201,7 +201,7 @@ async fn handle_request(
             let led_index = stream.read_u32_le().await? as usize;
             let rgb = stream.read_rgb().await?;
 
-            keyboard.update_leds(vec![rgb], led_index, true).await?;
+            keyboard.update_colors(vec![rgb], led_index, true).await?;
         }
         Some(Request::UpdateLeds) => {
             let _data_length = stream.read_u32_le().await?;
@@ -211,7 +211,27 @@ async fn handle_request(
                 colors.push(stream.read_rgb().await?);
             }
 
-            keyboard.update_leds(colors, 0, true).await?;
+            keyboard.update_colors(colors, 0, true).await?;
+        }
+        Some(Request::UpdateMode) => {
+            let data_length = stream.read_u32_le().await?;
+            let mode = stream.read_i32_le().await?;
+            keyboard.update_effect(mode as u8).await?;
+
+            let name_length = stream.read_u16_le().await? as usize;
+            let mut buffer = vec![0; data_length as usize - 10];
+            stream.read_exact(&mut buffer).await?;
+
+            let speed = buffer.read_u32_le(name_length + 32)?;
+            keyboard.update_speed(speed as u8).await?;
+
+            let brightness = buffer.read_u32_le(name_length + 36)?;
+            keyboard.update_brightness(brightness as u8).await?;
+
+            if buffer.read_u16_le(name_length + 48)? > 0 {
+                let color = buffer.read_rgb(name_length + 50)?;
+                keyboard.update_color(color).await?;
+            }
         }
         Some(_) => todo!("Unhandled request: {}", kind),
         None => todo!("Unhandled request: {}", kind),
@@ -224,6 +244,10 @@ trait BufferExtensions {
     fn extend_from_str(&mut self, str: &str);
     fn extend_from_color(&mut self, color: &Rgb<Srgb, u8>);
     fn extend_from_u32s(&mut self, values: &[u32]);
+
+    fn read_u32_le(&self, offset: usize) -> Result<u32>;
+    fn read_u16_le(&self, offset: usize) -> Result<u16>;
+    fn read_rgb(&self, offset: usize) -> Result<Rgb<Srgb, u8>>;
 }
 
 impl BufferExtensions for Vec<u8> {
@@ -244,6 +268,22 @@ impl BufferExtensions for Vec<u8> {
                 .flat_map(|x| x.to_le_bytes())
                 .collect::<Vec<_>>(),
         );
+    }
+
+    fn read_u32_le(&self, offset: usize) -> Result<u32> {
+        Ok(u32::from_le_bytes(
+            self[offset..offset + 4].try_into().unwrap(),
+        ))
+    }
+
+    fn read_u16_le(&self, offset: usize) -> Result<u16> {
+        Ok(u16::from_le_bytes(
+            self[offset..offset + 2].try_into().unwrap(),
+        ))
+    }
+
+    fn read_rgb(&self, offset: usize) -> Result<Rgb<Srgb, u8>> {
+        Ok(Rgb::new(self[offset], self[offset + 1], self[offset + 2]))
     }
 }
 

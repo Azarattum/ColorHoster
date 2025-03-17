@@ -9,19 +9,66 @@ use crate::{
     chunks::ChunkChanged,
     config::Config,
     consts::{
-        QMK_COMMAND_UPDATE_BRIGHTNESS, QMK_COMMAND_UPDATE_HS, QMK_CUSTOM_CHANNEL,
-        QMK_CUSTOM_SET_COMMAND, QMK_USAGE_ID, QMK_USAGE_PAGE,
+        QMK_COMMAND_UPDATE_BRIGHTNESS, QMK_COMMAND_UPDATE_COLOR, QMK_COMMAND_UPDATE_EFFECT,
+        QMK_COMMAND_UPDATE_MATRIX_BRIGHTNESS, QMK_COMMAND_UPDATE_MATRIX_CHROMA,
+        QMK_COMMAND_UPDATE_SPEED, QMK_CUSTOM_CHANNEL, QMK_CUSTOM_SET_COMMAND,
+        QMK_RGB_MATRIX_CHANNEL, QMK_USAGE_ID, QMK_USAGE_PAGE,
     },
 };
 
 pub struct Keyboard {
     config: Config,
     device: Device,
+
     colors: (Vec<(u8, u8)>, Vec<u8>),
+    color: (u8, u8),
+    brightness: u8,
+    effect: u8,
+    speed: u8,
 }
 
 impl Keyboard {
-    pub async fn update_leds(
+    pub async fn from_config(config: Config) -> Result<Keyboard> {
+        let device = DeviceInfo::enumerate()
+            .await?
+            .find(|info: &DeviceInfo| {
+                info.matches(
+                    QMK_USAGE_PAGE,
+                    QMK_USAGE_ID,
+                    config.vendor_id,
+                    config.product_id,
+                )
+            })
+            .await
+            .ok_or(anyhow!(
+                "{} cannot be detected (VID: {}, PID: {})!",
+                config.name,
+                config.vendor_id,
+                config.product_id
+            ))?
+            .open(AccessMode::ReadWrite)
+            .await?;
+
+        let leds = config.count_leds() as usize;
+        Ok(Keyboard {
+            config,
+            device,
+
+            // TODO: request from device
+            colors: (vec![(0, 0); leds], vec![255; leds]),
+            color: (0, 0),
+            brightness: 255,
+            effect: 0,
+            speed: 127,
+        })
+    }
+
+    pub async fn from_str(json_str: &str) -> Result<Keyboard> {
+        let config: Config = Config::from_str(json_str)?;
+        return Keyboard::from_config(config).await;
+    }
+
+    pub async fn update_colors(
         &mut self,
         colors: Vec<Rgb>,
         offset: usize,
@@ -48,7 +95,7 @@ impl Keyboard {
             .chunk_changed(chunk_size, &self.colors.0[offset..])
             .map(|(local_offset, chunk)| {
                 let mut chroma_report = report_template.clone();
-                chroma_report[2] = QMK_COMMAND_UPDATE_HS;
+                chroma_report[2] = QMK_COMMAND_UPDATE_MATRIX_CHROMA;
                 chroma_report[3] = (local_offset + offset) as u8;
                 chroma_report[4] = chunk.len() as u8;
                 chroma_report[5..(5 + chunk.len() * 2)].copy_from_slice(chunk.as_bytes());
@@ -59,7 +106,7 @@ impl Keyboard {
             .chunk_changed(chunk_size, &self.colors.1[offset..])
             .map(|(local_offset, chunk)| {
                 let mut brightness_report = report_template.clone();
-                brightness_report[2] = QMK_COMMAND_UPDATE_BRIGHTNESS;
+                brightness_report[2] = QMK_COMMAND_UPDATE_MATRIX_BRIGHTNESS;
                 brightness_report[3] = (local_offset + offset) as u8;
                 brightness_report[4] = chunk.len() as u8;
                 brightness_report[5..(5 + chunk.len())].copy_from_slice(chunk);
@@ -86,60 +133,6 @@ impl Keyboard {
         results.map(|_| ()).map_err(|e| e.into())
     }
 
-    pub async fn from_config(config: Config) -> Result<Keyboard> {
-        let device = DeviceInfo::enumerate()
-            .await?
-            .find(|info: &DeviceInfo| {
-                info.matches(
-                    QMK_USAGE_PAGE,
-                    QMK_USAGE_ID,
-                    config.vendor_id,
-                    config.product_id,
-                )
-            })
-            .await
-            .ok_or(anyhow!(
-                "{} cannot be detected (VID: {}, PID: {})!",
-                config.name,
-                config.vendor_id,
-                config.product_id
-            ))?
-            .open(AccessMode::ReadWrite)
-            .await?;
-
-        let leds = config.count_leds() as usize;
-        Ok(Keyboard {
-            config,
-            device,
-            colors: (vec![(0, 0); leds], vec![255; leds]),
-        })
-    }
-
-    pub async fn from_str(json_str: &str) -> Result<Keyboard> {
-        let config: Config = Config::from_str(json_str)?;
-        return Keyboard::from_config(config).await;
-    }
-
-    pub fn config(&self) -> &Config {
-        &self.config
-    }
-
-    pub async fn mode(&self) -> i32 {
-        0 // TODO: request from the device
-    }
-
-    pub async fn speed(&self) -> u32 {
-        63 // TODO: request from the device
-    }
-
-    pub async fn brightness(&self) -> u32 {
-        255 // TODO: request from the device
-    }
-
-    pub async fn color(&self) -> Rgb<Srgb, u8> {
-        Rgb::new(255, 255, 255)
-    }
-
     pub fn colors(&self) -> Vec<Rgb<Srgb, u8>> {
         let colors = self.colors.0.iter().zip(&self.colors.1).map(|((h, s), v)| {
             let rgb: Rgb = Hsv::new(*h, *s, *v).into_format().into_color();
@@ -147,6 +140,85 @@ impl Keyboard {
         });
 
         return colors.collect();
+    }
+
+    pub async fn update_effect(&mut self, effect: u8) -> Result<()> {
+        if effect != self.effect {
+            self.effect = effect;
+            let mut report: [u8; 32] = [0; 32];
+            report[0] = QMK_CUSTOM_SET_COMMAND;
+            report[1] = QMK_RGB_MATRIX_CHANNEL;
+            report[2] = QMK_COMMAND_UPDATE_EFFECT;
+            report[3] = effect;
+            self.device.write_output_report(&report).await?;
+        }
+        Ok(())
+    }
+
+    pub fn effect(&self) -> u8 {
+        self.effect
+    }
+
+    pub async fn update_speed(&mut self, speed: u8) -> Result<()> {
+        if speed != self.speed {
+            self.speed = speed;
+            let mut report: [u8; 32] = [0; 32];
+            report[0] = QMK_CUSTOM_SET_COMMAND;
+            report[1] = QMK_RGB_MATRIX_CHANNEL;
+            report[2] = QMK_COMMAND_UPDATE_SPEED;
+            report[3] = speed;
+            self.device.write_output_report(&report).await?;
+        }
+        Ok(())
+    }
+
+    pub fn speed(&self) -> u8 {
+        self.speed
+    }
+
+    pub async fn update_brightness(&mut self, brightness: u8) -> Result<()> {
+        if brightness != self.brightness {
+            self.brightness = brightness;
+            let mut report: [u8; 32] = [0; 32];
+            report[0] = QMK_CUSTOM_SET_COMMAND;
+            report[1] = QMK_RGB_MATRIX_CHANNEL;
+            report[2] = QMK_COMMAND_UPDATE_BRIGHTNESS;
+            report[3] = brightness;
+            self.device.write_output_report(&report).await?;
+        }
+        Ok(())
+    }
+
+    pub fn brightness(&self) -> u8 {
+        self.brightness
+    }
+
+    pub async fn update_color(&mut self, color: Rgb<Srgb, u8>) -> Result<()> {
+        let hsv: Hsv = color.into_format().into_color();
+        let hsv = hsv.into_format::<u8>();
+
+        if hsv.hue != self.color.0 || hsv.saturation != self.color.1 {
+            self.color = (hsv.hue.into(), hsv.saturation);
+            let mut report: [u8; 32] = [0; 32];
+            report[0] = QMK_CUSTOM_SET_COMMAND;
+            report[1] = QMK_RGB_MATRIX_CHANNEL;
+            report[2] = QMK_COMMAND_UPDATE_COLOR;
+            report[3] = hsv.hue.into();
+            report[4] = hsv.saturation;
+            self.device.write_output_report(&report).await?;
+        }
+        Ok(())
+    }
+
+    pub fn color(&self) -> Rgb<Srgb, u8> {
+        let rgb: Rgb = Hsv::new(self.color.0, self.color.1, 255)
+            .into_format()
+            .into_color();
+        return rgb.into_format();
+    }
+
+    pub fn config(&self) -> &Config {
+        &self.config
     }
 }
 
