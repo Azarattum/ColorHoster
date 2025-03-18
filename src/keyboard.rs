@@ -1,7 +1,5 @@
 use anyhow::{Result, anyhow};
-use async_hid::{AccessMode, Device, DeviceInfo};
 use futures::future::{self};
-use futures_lite::StreamExt;
 use palette::{Hsv, IntoColor, encoding::Srgb, rgb::Rgb};
 use std::borrow::Borrow;
 
@@ -9,16 +7,16 @@ use crate::{
     chunks::ChunkChanged,
     config::Config,
     consts::{
-        QMK_COMMAND_UPDATE_BRIGHTNESS, QMK_COMMAND_UPDATE_COLOR, QMK_COMMAND_UPDATE_EFFECT,
-        QMK_COMMAND_UPDATE_MATRIX_BRIGHTNESS, QMK_COMMAND_UPDATE_MATRIX_CHROMA,
-        QMK_COMMAND_UPDATE_SPEED, QMK_CUSTOM_CHANNEL, QMK_CUSTOM_SET_COMMAND,
-        QMK_RGB_MATRIX_CHANNEL, QMK_USAGE_ID, QMK_USAGE_PAGE,
+        QMK_COMMAND_BRIGHTNESS, QMK_COMMAND_COLOR, QMK_COMMAND_EFFECT,
+        QMK_COMMAND_MATRIX_BRIGHTNESS, QMK_COMMAND_MATRIX_CHROMA, QMK_COMMAND_SPEED,
+        QMK_CUSTOM_CHANNEL, QMK_CUSTOM_GET_COMMAND, QMK_CUSTOM_SET_COMMAND, QMK_RGB_MATRIX_CHANNEL,
     },
+    device::KeyboardDevice,
 };
 
 pub struct Keyboard {
     config: Config,
-    device: Device,
+    device: KeyboardDevice,
 
     colors: (Vec<(u8, u8)>, Vec<u8>),
     color: (u8, u8),
@@ -28,44 +26,33 @@ pub struct Keyboard {
 }
 
 impl Keyboard {
-    pub async fn from_config(config: Config) -> Result<Keyboard> {
-        let device = DeviceInfo::enumerate()
-            .await?
-            .find(|info: &DeviceInfo| {
-                info.matches(
-                    QMK_USAGE_PAGE,
-                    QMK_USAGE_ID,
-                    config.vendor_id,
-                    config.product_id,
-                )
-            })
-            .await
-            .ok_or(anyhow!(
-                "{} cannot be detected (VID: {}, PID: {})!",
-                config.name,
-                config.vendor_id,
-                config.product_id
-            ))?
-            .open(AccessMode::ReadWrite)
-            .await?;
+    pub async fn from_str(json_str: &str) -> Result<Keyboard> {
+        let config: Config = Config::from_str(json_str)?;
+        return Keyboard::from_config(config).await;
+    }
 
+    pub async fn from_config(config: Config) -> Result<Keyboard> {
+        let device = KeyboardDevice::from_ids(config.vendor_id, config.product_id).await?;
         let leds = config.count_leds() as usize;
+
+        let (colors, color, effect, speed, brightness) = tokio::try_join!(
+            Keyboard::load_colors(&device, leds),
+            Keyboard::load_color(&device),
+            Keyboard::load_effect(&device),
+            Keyboard::load_speed(&device),
+            Keyboard::load_brightness(&device),
+        )?;
+
         Ok(Keyboard {
             config,
             device,
 
-            // TODO: request from device
-            colors: (vec![(0, 0); leds], vec![255; leds]),
-            color: (0, 0),
-            brightness: 255,
-            effect: 0,
-            speed: 127,
+            colors,
+            color,
+            brightness,
+            effect,
+            speed,
         })
-    }
-
-    pub async fn from_str(json_str: &str) -> Result<Keyboard> {
-        let config: Config = Config::from_str(json_str)?;
-        return Keyboard::from_config(config).await;
     }
 
     pub async fn update_colors(
@@ -89,13 +76,12 @@ impl Keyboard {
         let mut report_template: [u8; 32] = [0; 32];
         report_template[0] = QMK_CUSTOM_SET_COMMAND;
         report_template[1] = QMK_CUSTOM_CHANNEL;
-        let chunk_size: usize = (32 - 5) / 2;
 
         let chroma_reports = chroma
-            .chunk_changed(chunk_size, &self.colors.0[offset..])
+            .chunk_changed((32 - 5) / 2, &self.colors.0[offset..])
             .map(|(local_offset, chunk)| {
                 let mut chroma_report = report_template.clone();
-                chroma_report[2] = QMK_COMMAND_UPDATE_MATRIX_CHROMA;
+                chroma_report[2] = QMK_COMMAND_MATRIX_CHROMA;
                 chroma_report[3] = (local_offset + offset) as u8;
                 chroma_report[4] = chunk.len() as u8;
                 chroma_report[5..(5 + chunk.len() * 2)].copy_from_slice(chunk.as_bytes());
@@ -103,10 +89,10 @@ impl Keyboard {
             });
 
         let brightness_reports = brightness
-            .chunk_changed(chunk_size, &self.colors.1[offset..])
+            .chunk_changed(32 - 5, &self.colors.1[offset..])
             .map(|(local_offset, chunk)| {
                 let mut brightness_report = report_template.clone();
-                brightness_report[2] = QMK_COMMAND_UPDATE_MATRIX_BRIGHTNESS;
+                brightness_report[2] = QMK_COMMAND_MATRIX_BRIGHTNESS;
                 brightness_report[3] = (local_offset + offset) as u8;
                 brightness_report[4] = chunk.len() as u8;
                 brightness_report[5..(5 + chunk.len())].copy_from_slice(chunk);
@@ -121,7 +107,7 @@ impl Keyboard {
         let device = &self.device;
         let handles: Vec<_> = chroma_reports
             .chain(maybe_brightness_reports)
-            .map(|report| async move { device.write_output_report(&report).await })
+            .map(|report| async move { device.send_report(report).await })
             .collect();
 
         self.colors.0[offset..offset + chroma.len()].copy_from_slice(&chroma);
@@ -129,8 +115,8 @@ impl Keyboard {
             self.colors.1[offset..offset + brightness.len()].copy_from_slice(&brightness);
         }
 
-        let results: Result<Vec<_>, _> = future::join_all(handles).await.into_iter().collect();
-        results.map(|_| ()).map_err(|e| e.into())
+        future::try_join_all(handles).await?;
+        Ok(())
     }
 
     pub fn colors(&self) -> Vec<Rgb<Srgb, u8>> {
@@ -142,15 +128,39 @@ impl Keyboard {
         return colors.collect();
     }
 
+    pub async fn update_color(&mut self, color: Rgb<Srgb, u8>) -> Result<()> {
+        let hsv: Hsv = color.into_format().into_color();
+        let hsv = hsv.into_format::<u8>();
+
+        if hsv.hue != self.color.0 || hsv.saturation != self.color.1 {
+            self.color = (hsv.hue.into(), hsv.saturation);
+            let mut report: [u8; 32] = [0; 32];
+            report[0] = QMK_CUSTOM_SET_COMMAND;
+            report[1] = QMK_RGB_MATRIX_CHANNEL;
+            report[2] = QMK_COMMAND_COLOR;
+            report[3] = hsv.hue.into();
+            report[4] = hsv.saturation;
+            self.device.send_report(report).await?;
+        }
+        Ok(())
+    }
+
+    pub fn color(&self) -> Rgb<Srgb, u8> {
+        let rgb: Rgb = Hsv::new(self.color.0, self.color.1, 255)
+            .into_format()
+            .into_color();
+        return rgb.into_format();
+    }
+
     pub async fn update_effect(&mut self, effect: u8) -> Result<()> {
         if effect != self.effect {
             self.effect = effect;
             let mut report: [u8; 32] = [0; 32];
             report[0] = QMK_CUSTOM_SET_COMMAND;
             report[1] = QMK_RGB_MATRIX_CHANNEL;
-            report[2] = QMK_COMMAND_UPDATE_EFFECT;
+            report[2] = QMK_COMMAND_EFFECT;
             report[3] = effect;
-            self.device.write_output_report(&report).await?;
+            self.device.send_report(report).await?;
         }
         Ok(())
     }
@@ -165,9 +175,9 @@ impl Keyboard {
             let mut report: [u8; 32] = [0; 32];
             report[0] = QMK_CUSTOM_SET_COMMAND;
             report[1] = QMK_RGB_MATRIX_CHANNEL;
-            report[2] = QMK_COMMAND_UPDATE_SPEED;
+            report[2] = QMK_COMMAND_SPEED;
             report[3] = speed;
-            self.device.write_output_report(&report).await?;
+            self.device.send_report(report).await?;
         }
         Ok(())
     }
@@ -182,9 +192,9 @@ impl Keyboard {
             let mut report: [u8; 32] = [0; 32];
             report[0] = QMK_CUSTOM_SET_COMMAND;
             report[1] = QMK_RGB_MATRIX_CHANNEL;
-            report[2] = QMK_COMMAND_UPDATE_BRIGHTNESS;
+            report[2] = QMK_COMMAND_BRIGHTNESS;
             report[3] = brightness;
-            self.device.write_output_report(&report).await?;
+            self.device.send_report(report).await?;
         }
         Ok(())
     }
@@ -193,32 +203,98 @@ impl Keyboard {
         self.brightness
     }
 
-    pub async fn update_color(&mut self, color: Rgb<Srgb, u8>) -> Result<()> {
-        let hsv: Hsv = color.into_format().into_color();
-        let hsv = hsv.into_format::<u8>();
-
-        if hsv.hue != self.color.0 || hsv.saturation != self.color.1 {
-            self.color = (hsv.hue.into(), hsv.saturation);
-            let mut report: [u8; 32] = [0; 32];
-            report[0] = QMK_CUSTOM_SET_COMMAND;
-            report[1] = QMK_RGB_MATRIX_CHANNEL;
-            report[2] = QMK_COMMAND_UPDATE_COLOR;
-            report[3] = hsv.hue.into();
-            report[4] = hsv.saturation;
-            self.device.write_output_report(&report).await?;
-        }
-        Ok(())
-    }
-
-    pub fn color(&self) -> Rgb<Srgb, u8> {
-        let rgb: Rgb = Hsv::new(self.color.0, self.color.1, 255)
-            .into_format()
-            .into_color();
-        return rgb.into_format();
-    }
-
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    async fn load_colors(
+        device: &KeyboardDevice,
+        count: usize,
+    ) -> Result<(Vec<(u8, u8)>, Vec<u8>)> {
+        let mut colors = (vec![(0, 0); count], vec![255; count]);
+
+        let mut report_template: [u8; 32] = [0; 32];
+        report_template[0] = QMK_CUSTOM_GET_COMMAND;
+        report_template[1] = QMK_CUSTOM_CHANNEL;
+
+        let chroma_chunk_size: usize = (32 - 5) / 2;
+        let chroma_chunks = (count as f32 / chroma_chunk_size as f32).ceil() as usize;
+        let chroma_reports = (0..chroma_chunks).map(|i| {
+            let mut chroma_report = report_template.clone();
+            chroma_report[2] = QMK_COMMAND_MATRIX_CHROMA;
+            chroma_report[3] = (i * chroma_chunk_size) as u8;
+            chroma_report[4] = chroma_chunk_size.min(count - i * chroma_chunk_size) as u8;
+            return chroma_report;
+        });
+
+        let brightness_chunk_size: usize = 32 - 5;
+        let brightness_chunks = (count as f32 / brightness_chunk_size as f32).ceil() as usize;
+        let brightness_reports = (0..brightness_chunks).map(|i| {
+            let mut brightness_report = report_template.clone();
+            brightness_report[2] = QMK_COMMAND_MATRIX_BRIGHTNESS;
+            brightness_report[3] = (i * brightness_chunk_size) as u8;
+            brightness_report[4] =
+                brightness_chunk_size.min(count - i * brightness_chunk_size) as u8;
+            return brightness_report;
+        });
+
+        let requests = chroma_reports
+            .chain(brightness_reports)
+            .map(|report| async move { device.request_report(report, 5).await });
+
+        future::try_join_all(requests)
+            .await?
+            .into_iter()
+            .for_each(|response| {
+                let is_brightness = response[2] == QMK_COMMAND_MATRIX_BRIGHTNESS;
+                let offset = response[3] as usize;
+                let count = response[4] as usize;
+                if is_brightness {
+                    colors.1[offset..offset + count].copy_from_slice(&response[5..5 + count]);
+                } else {
+                    colors.0[offset..offset + count]
+                        .as_bytes_mut()
+                        .copy_from_slice(&response[5..5 + count * 2]);
+                }
+            });
+
+        Ok(colors)
+    }
+
+    async fn load_color(device: &KeyboardDevice) -> Result<(u8, u8)> {
+        let mut report: [u8; 32] = [0; 32];
+        report[0] = QMK_CUSTOM_GET_COMMAND;
+        report[1] = QMK_RGB_MATRIX_CHANNEL;
+        report[2] = QMK_COMMAND_COLOR;
+        let response = device.request_report(report, 3).await?;
+        Ok((response[3], response[4]))
+    }
+
+    async fn load_effect(device: &KeyboardDevice) -> Result<u8> {
+        let mut report: [u8; 32] = [0; 32];
+        report[0] = QMK_CUSTOM_GET_COMMAND;
+        report[1] = QMK_RGB_MATRIX_CHANNEL;
+        report[2] = QMK_COMMAND_EFFECT;
+        let response = device.request_report(report, 3).await?;
+        Ok(response[3])
+    }
+
+    async fn load_speed(device: &KeyboardDevice) -> Result<u8> {
+        let mut report: [u8; 32] = [0; 32];
+        report[0] = QMK_CUSTOM_GET_COMMAND;
+        report[1] = QMK_RGB_MATRIX_CHANNEL;
+        report[2] = QMK_COMMAND_SPEED;
+        let response = device.request_report(report, 3).await?;
+        Ok(response[3])
+    }
+
+    async fn load_brightness(device: &KeyboardDevice) -> Result<u8> {
+        let mut report: [u8; 32] = [0; 32];
+        report[0] = QMK_CUSTOM_GET_COMMAND;
+        report[1] = QMK_RGB_MATRIX_CHANNEL;
+        report[2] = QMK_COMMAND_BRIGHTNESS;
+        let response = device.request_report(report, 3).await?;
+        Ok(response[3])
     }
 }
 
@@ -230,12 +306,19 @@ impl Borrow<str> for Keyboard {
 
 trait AsBytes {
     fn as_bytes(&self) -> &[u8];
+    fn as_bytes_mut(&mut self) -> &mut [u8];
 }
 
-impl AsBytes for &[(u8, u8)] {
+impl AsBytes for [(u8, u8)] {
     fn as_bytes(&self) -> &[u8] {
         let ptr = self.as_ptr() as *const u8;
         let len = self.len() * 2;
         unsafe { std::slice::from_raw_parts(ptr, len) }
+    }
+
+    fn as_bytes_mut(&mut self) -> &mut [u8] {
+        let ptr = self.as_mut_ptr() as *mut u8;
+        let len = self.len() * 2;
+        unsafe { std::slice::from_raw_parts_mut(ptr, len) }
     }
 }

@@ -3,6 +3,7 @@
 mod chunks;
 mod config;
 mod consts;
+mod device;
 mod keyboard;
 
 use anyhow::{Result, anyhow};

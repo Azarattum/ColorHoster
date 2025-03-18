@@ -25,14 +25,17 @@ pub const QMK_USAGE_PAGE: u16 = 0xFF60;
 pub const QMK_USAGE_ID: u16 = 0x61;
 
 pub const QMK_CUSTOM_SET_COMMAND: u8 = 0x07;
+pub const QMK_CUSTOM_GET_COMMAND: u8 = 0x08;
+
 pub const QMK_CUSTOM_CHANNEL: u8 = 0x0;
+pub const QMK_COMMAND_MATRIX_CHROMA: u8 = 0x1;
+pub const QMK_COMMAND_MATRIX_BRIGHTNESS: u8 = 0x2;
+
 pub const QMK_RGB_MATRIX_CHANNEL: u8 = 0x3;
-pub const QMK_COMMAND_UPDATE_MATRIX_CHROMA: u8 = 0x1;
-pub const QMK_COMMAND_UPDATE_MATRIX_BRIGHTNESS: u8 = 0x2;
-pub const QMK_COMMAND_UPDATE_BRIGHTNESS: u8 = 0x1;
-pub const QMK_COMMAND_UPDATE_EFFECT: u8 = 0x2;
-pub const QMK_COMMAND_UPDATE_SPEED: u8 = 0x3;
-pub const QMK_COMMAND_UPDATE_COLOR: u8 = 0x4;
+pub const QMK_COMMAND_BRIGHTNESS: u8 = 0x1;
+pub const QMK_COMMAND_EFFECT: u8 = 0x2;
+pub const QMK_COMMAND_SPEED: u8 = 0x3;
+pub const QMK_COMMAND_COLOR: u8 = 0x4;
 
 pub const DEVICE_TYPE_KEYBOARD: i32 = 5;
 
