@@ -6,6 +6,7 @@
     "keymap",
     "OPENRGB",
     "repr",
-    "rfind"
+    "rfind",
+    "scancode"
   ]
 }

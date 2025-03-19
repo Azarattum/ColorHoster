@@ -26,6 +26,7 @@ pub const QMK_USAGE_ID: u16 = 0x61;
 
 pub const QMK_CUSTOM_SET_COMMAND: u8 = 0x07;
 pub const QMK_CUSTOM_GET_COMMAND: u8 = 0x08;
+pub const QMK_KEYMAP_GET_COMMAND: u8 = 0x12;
 
 pub const QMK_CUSTOM_CHANNEL: u8 = 0x0;
 pub const QMK_COMMAND_MATRIX_CHROMA: u8 = 0x1;

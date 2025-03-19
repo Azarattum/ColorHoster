@@ -9,13 +9,15 @@ use crate::{
     consts::{
         QMK_COMMAND_BRIGHTNESS, QMK_COMMAND_COLOR, QMK_COMMAND_EFFECT,
         QMK_COMMAND_MATRIX_BRIGHTNESS, QMK_COMMAND_MATRIX_CHROMA, QMK_COMMAND_SPEED,
-        QMK_CUSTOM_CHANNEL, QMK_CUSTOM_GET_COMMAND, QMK_CUSTOM_SET_COMMAND, QMK_RGB_MATRIX_CHANNEL,
+        QMK_CUSTOM_CHANNEL, QMK_CUSTOM_GET_COMMAND, QMK_CUSTOM_SET_COMMAND, QMK_KEYMAP_GET_COMMAND,
+        QMK_RGB_MATRIX_CHANNEL,
     },
     device::KeyboardDevice,
 };
 
 pub struct Keyboard {
     config: Config,
+    keymap: Vec<u16>,
     device: KeyboardDevice,
 
     colors: (Vec<(u8, u8)>, Vec<u8>),
@@ -35,7 +37,8 @@ impl Keyboard {
         let device = KeyboardDevice::from_ids(config.vendor_id, config.product_id).await?;
         let leds = config.count_leds() as usize;
 
-        let (colors, color, effect, speed, brightness) = tokio::try_join!(
+        let (keymap, colors, color, effect, speed, brightness) = tokio::try_join!(
+            Keyboard::load_keymap(&device, (config.matrix.0 * config.matrix.1) as usize),
             Keyboard::load_colors(&device, leds),
             Keyboard::load_color(&device),
             Keyboard::load_effect(&device),
@@ -45,6 +48,7 @@ impl Keyboard {
 
         Ok(Keyboard {
             config,
+            keymap,
             device,
 
             colors,
@@ -53,6 +57,10 @@ impl Keyboard {
             effect,
             speed,
         })
+    }
+
+    pub fn keymap(&self) -> &Vec<u16> {
+        &self.keymap
     }
 
     pub async fn update_colors(
@@ -295,6 +303,40 @@ impl Keyboard {
         report[2] = QMK_COMMAND_BRIGHTNESS;
         let response = device.request_report(report, 3).await?;
         Ok(response[3])
+    }
+
+    async fn load_keymap(device: &KeyboardDevice, count: usize) -> Result<Vec<u16>> {
+        let mut keymap = vec![0u16; count];
+
+        let mut report_template: [u8; 32] = [0; 32];
+        report_template[0] = QMK_KEYMAP_GET_COMMAND;
+
+        let keymap_chunk_size: usize = 32 - 4;
+        let keymap_chunks = ((count * 2) as f32 / keymap_chunk_size as f32).ceil() as usize;
+
+        let requests = (0..keymap_chunks)
+            .map(|i| {
+                let mut report = report_template.clone();
+                let offset = (i * keymap_chunk_size) as u16;
+                report[1..3].copy_from_slice(&offset.to_be_bytes());
+                report[3] = (keymap_chunk_size.min((count * 2) - i * keymap_chunk_size)) as u8;
+                return report;
+            })
+            .map(|report| async move { device.request_report(report, 5).await });
+
+        future::try_join_all(requests)
+            .await?
+            .into_iter()
+            .for_each(|response| {
+                let offset = u16::from_be_bytes(response[1..3].try_into().unwrap()) as usize / 2;
+                let count = (response[3] / 2) as usize;
+                (0..count).for_each(|i| {
+                    keymap[offset + i] =
+                        u16::from_be_bytes(response[4 + i * 2..4 + i * 2 + 2].try_into().unwrap());
+                });
+            });
+
+        Ok(keymap)
     }
 }
 

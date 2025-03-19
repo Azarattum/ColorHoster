@@ -8,6 +8,7 @@ mod keyboard;
 
 use anyhow::{Result, anyhow};
 use futures::future;
+use key_mapping::MAPPED_KEYS;
 use palette::{encoding::Srgb, rgb::Rgb};
 use std::{fs, sync::Arc};
 use tokio::{
@@ -171,10 +172,20 @@ async fn handle_request(
             buffer.extend_from_u32s(&led_matrix);
 
             buffer.extend_from_slice(&(leds_count as u16).to_le_bytes());
-            for (i, (led, _)) in config.leds.iter().filter_map(|led| *led).enumerate() {
-                // TODO: use name from actual keyboard keymap
-                buffer.extend_from_str(&format!("LED {}", i));
-                buffer.extend_from_slice(&(led as u32).to_le_bytes());
+            let keymap = keyboard.keymap();
+            for item in config.leds.iter() {
+                if let &Some((led, (row, col))) = item {
+                    let scancode = keymap[row as usize * config.matrix.0 as usize + col as usize];
+                    // TODO: consider support for special codes (like "Fn")
+                    let keycode = u8::try_from(scancode)
+                        .ok()
+                        .and_then(|x| MAPPED_KEYS.get(&x))
+                        .map(|x| x.dom_key)
+                        .unwrap_or("Unknown");
+
+                    buffer.extend_from_str(&keycode);
+                    buffer.extend_from_slice(&(led as u32).to_le_bytes());
+                }
             }
 
             // TODO: are these per-key colors?
