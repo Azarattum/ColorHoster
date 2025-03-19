@@ -8,7 +8,6 @@ mod keyboard;
 
 use anyhow::{Result, anyhow};
 use futures::future;
-use key_mapping::MAPPED_KEYS;
 use palette::{encoding::Srgb, rgb::Rgb};
 use std::{fs, sync::Arc};
 use tokio::{
@@ -19,7 +18,7 @@ use tokio::{
 
 use consts::{
     DEVICE_TYPE_KEYBOARD, MODE_FLAG_HAS_MODE_SPECIFIC_COLOR, MODE_FLAG_HAS_PER_LED_COLOR,
-    MODE_FLAG_HAS_RANDOM_COLOR, Request, ZONE_TYPE_MATRIX,
+    MODE_FLAG_HAS_RANDOM_COLOR, Request, ZONE_TYPE_MATRIX, openrgb_keycode,
 };
 use keyboard::Keyboard;
 
@@ -176,14 +175,7 @@ async fn handle_request(
             for item in config.leds.iter() {
                 if let &Some((led, (row, col))) = item {
                     let scancode = keymap[row as usize * config.matrix.0 as usize + col as usize];
-                    // TODO: consider support for special codes (like "Fn")
-                    let keycode = u8::try_from(scancode)
-                        .ok()
-                        .and_then(|x| MAPPED_KEYS.get(&x))
-                        .map(|x| x.dom_key)
-                        .unwrap_or("Unknown");
-
-                    buffer.extend_from_str(&keycode);
+                    buffer.extend_from_str(&format!("Key: {}", openrgb_keycode(scancode)));
                     buffer.extend_from_slice(&(led as u32).to_le_bytes());
                 }
             }
