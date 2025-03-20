@@ -219,8 +219,8 @@ async fn handle_request(
         }
         Some(Request::UpdateMode) => {
             let data_length = stream.read_u32_le().await?;
-            let mode = stream.read_i32_le().await?;
-            keyboard.update_effect(mode as u8).await?;
+            let effect = stream.read_i32_le().await? as u8;
+            keyboard.update_effect(effect).await?;
 
             let name_length = stream.read_u16_le().await? as usize;
             let mut buffer = vec![0; data_length as usize - 10];
@@ -235,6 +235,17 @@ async fn handle_request(
             if buffer.read_u16_le(name_length + 48)? > 0 {
                 let color = buffer.read_rgb(name_length + 50)?;
                 keyboard.update_color(color).await?;
+            }
+        }
+        Some(Request::SetCustomMode) => {
+            if let Some(effect) = keyboard
+                .config()
+                .effects
+                .iter()
+                .find(|x| x.2 & MODE_FLAG_HAS_PER_LED_COLOR != 0)
+                .map(|x| x.1 as u8)
+            {
+                keyboard.update_effect(effect).await?;
             }
         }
         Some(_) => todo!("Unhandled request: {}", kind),
