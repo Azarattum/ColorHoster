@@ -1,8 +1,14 @@
 use anyhow::Result;
+use evalexpr::{
+    ContextWithMutableVariables, DefaultNumericTypes, HashMapContext, Node, build_operator_tree,
+};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::consts::{MODE_FLAG_HAS_BRIGHTNESS, MODE_FLAG_HAS_PER_LED_COLOR, MODE_FLAG_HAS_SPEED};
+use crate::consts::{
+    MODE_FLAG_HAS_BRIGHTNESS, MODE_FLAG_HAS_MODE_SPECIFIC_COLOR, MODE_FLAG_HAS_PER_LED_COLOR,
+    MODE_FLAG_HAS_RANDOM_COLOR, MODE_FLAG_HAS_SPEED,
+};
 
 #[derive(Debug)]
 pub struct Config {
@@ -43,20 +49,46 @@ impl Config {
             .flat_map(|x| x.content)
             .collect();
 
-        let speed = menus
+        // Collect controls
+        let controls: Vec<Control> = menus
             .iter()
-            .find_map(|x| match x {
+            .filter_map(|menu_option| match menu_option {
                 MenuOption::Range {
-                    content, options, ..
-                } if content
-                    .get(0)
-                    .is_some_and(|x| x == "id_qmk_rgb_matrix_effect_speed") =>
-                {
-                    Some(*options)
+                    content, show_if, ..
+                } => {
+                    let control_type = match content.get(0).and_then(Value::as_str) {
+                        Some("id_qmk_rgb_matrix_brightness") => Some(ControlType::Brightness),
+                        Some("id_qmk_rgb_matrix_effect_speed") => Some(ControlType::Speed),
+                        _ => None,
+                    };
+                    control_type.map(|control_type| Control {
+                        control_type,
+                        show_if: show_if.clone(),
+                    })
+                }
+                MenuOption::Color { content, show_if } => {
+                    if content.get(0).and_then(Value::as_str) == Some("id_qmk_rgb_matrix_color") {
+                        Some(Control {
+                            control_type: ControlType::Color,
+                            show_if: show_if.clone(),
+                        })
+                    } else {
+                        None
+                    }
+                }
+                MenuOption::ColorPalette { content, show_if } => {
+                    if content.get(0).and_then(Value::as_str) == Some("id_qmk_rgb_matrix_color") {
+                        Some(Control {
+                            control_type: ControlType::ColorPalette,
+                            show_if: show_if.clone(),
+                        })
+                    } else {
+                        None
+                    }
                 }
                 _ => None,
             })
-            .unwrap_or((0, 0));
+            .collect();
 
         let brightness = menus
             .iter()
@@ -73,28 +105,93 @@ impl Config {
             })
             .unwrap_or((0, 0));
 
-        // TODO: parse from `showIf` in JSON
-        let flags = MODE_FLAG_HAS_BRIGHTNESS | MODE_FLAG_HAS_SPEED | MODE_FLAG_HAS_PER_LED_COLOR;
-
-        let effects: Vec<_> = menus
-            .into_iter()
-            .flat_map(|x| match x {
-                MenuOption::Dropdown {
+        let speed = menus
+            .iter()
+            .find_map(|x| match x {
+                MenuOption::Range {
                     content, options, ..
                 } if content
                     .get(0)
-                    .is_some_and(|x| x == "id_qmk_rgb_matrix_effect") =>
+                    .is_some_and(|x| x == "id_qmk_rgb_matrix_effect_speed") =>
                 {
-                    Some(
-                        options
-                            .iter()
-                            .map(|x| (x.0.clone(), x.1, flags))
-                            .collect::<Vec<_>>(),
-                    )
+                    Some(*options)
                 }
                 _ => None,
             })
-            .flatten()
+            .unwrap_or((0, 0));
+
+        // Parse effects from the dropdown
+        let effects_dropdown = menus
+            .iter()
+            .find_map(|menu_option| {
+                if let MenuOption::Dropdown {
+                    content, options, ..
+                } = menu_option
+                {
+                    if content.get(0).and_then(Value::as_str) == Some("id_qmk_rgb_matrix_effect") {
+                        Some(options.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+
+        // Compute flags for each effect
+        let effects: Vec<(String, i32, u32)> = effects_dropdown
+            .into_iter()
+            .map(|(name, id)| {
+                let mut flags = 0;
+                let mut has_brightness = false;
+                let mut has_speed = false;
+                let mut color_type = None;
+
+                for control in &controls {
+                    let is_active = match &control.show_if {
+                        Some(show_if) => {
+                            let modified = show_if.replace("{id_qmk_rgb_matrix_effect}", "x");
+                            let expr: Node<_> = match build_operator_tree(&modified) {
+                                Ok(expr) => expr,
+                                Err(_) => continue,
+                            };
+                            let mut context = HashMapContext::<DefaultNumericTypes>::new();
+                            context
+                                .set_value("x".to_string(), evalexpr::Value::Int(id as i64))
+                                .ok();
+                            expr.eval_boolean_with_context(&context).unwrap_or(false)
+                        }
+                        None => true,
+                    };
+
+                    if !is_active {
+                        continue;
+                    }
+
+                    match control.control_type {
+                        ControlType::Brightness => has_brightness = true,
+                        ControlType::Speed => has_speed = true,
+                        ControlType::Color => {
+                            color_type = Some(MODE_FLAG_HAS_MODE_SPECIFIC_COLOR);
+                        }
+                        ControlType::ColorPalette => {
+                            color_type = Some(MODE_FLAG_HAS_PER_LED_COLOR);
+                        }
+                    }
+                }
+
+                if has_brightness {
+                    flags |= MODE_FLAG_HAS_BRIGHTNESS;
+                }
+                if has_speed {
+                    flags |= MODE_FLAG_HAS_SPEED;
+                }
+                let color_flag = color_type.unwrap_or(MODE_FLAG_HAS_RANDOM_COLOR);
+                flags |= color_flag;
+
+                (name, id, flags)
+            })
             .collect();
 
         Ok(Config {
@@ -103,9 +200,9 @@ impl Config {
             product_id,
             leds,
             effects,
-            speed,
-            brightness,
             matrix,
+            brightness,
+            speed,
         })
     }
 
@@ -159,6 +256,20 @@ pub struct KeyboardJson {
     layouts: Layouts,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ControlType {
+    Brightness,
+    Speed,
+    Color,
+    ColorPalette,
+}
+
+#[derive(Debug)]
+struct Control {
+    control_type: ControlType,
+    show_if: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct MatrixDimensions {
     rows: u32,
@@ -182,11 +293,25 @@ pub enum MenuOption {
     Range {
         options: (u32, u32),
         content: Vec<Value>,
+        #[serde(rename = "showIf")]
+        show_if: Option<String>,
     },
     #[serde(alias = "dropdown")]
     Dropdown {
         content: Vec<Value>,
         options: Vec<(String, i32)>,
+    },
+    #[serde(alias = "color")]
+    Color {
+        content: Vec<Value>,
+        #[serde(rename = "showIf")]
+        show_if: Option<String>,
+    },
+    #[serde(alias = "color-palette")]
+    ColorPalette {
+        content: Vec<Value>,
+        #[serde(rename = "showIf")]
+        show_if: Option<String>,
     },
     #[allow(dead_code)]
     #[serde(untagged)]
