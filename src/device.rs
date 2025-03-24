@@ -15,6 +15,7 @@ pub struct KeyboardDevice {
     hid: Arc<Device>,
     listener: CancellationToken,
     reporter: Sender<(Vec<u8>, FutureReportState)>,
+    win_lock: tokio::sync::Mutex<()>,
 }
 
 impl KeyboardDevice {
@@ -80,14 +81,29 @@ impl KeyboardDevice {
             hid,
             reporter,
             listener,
+            win_lock: tokio::sync::Mutex::new(()),
         })
     }
 
     pub async fn send_report(&self, report: [u8; 32]) -> Result<()> {
-        self.hid
-            .write_output_report(&report)
-            .await
-            .map_err(|err| err.into())
+        if cfg!(target_os = "windows") {
+            let mut report_with_id = [0u8; 33];
+            report_with_id[1..33].copy_from_slice(&report);
+
+            let lock = self.win_lock.lock().await;
+            self.hid
+                .write_output_report(&report_with_id)
+                .await
+                .map_err(|err| anyhow::Error::from(err))?;
+            drop(lock);
+        } else {
+            self.hid
+                .write_output_report(&report)
+                .await
+                .map_err(|err| anyhow::Error::from(err))?;
+        }
+
+        Ok(())
     }
 
     pub async fn request_report(&self, report: [u8; 32], ref_bytes: usize) -> Result<[u8; 32]> {
