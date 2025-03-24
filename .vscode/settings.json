@@ -6,8 +6,10 @@
     "Hoster",
     "keymap",
     "OPENRGB",
+    "ORGB",
     "repr",
     "rfind",
-    "scancode"
+    "scancode",
+    "Srgb"
   ]
 }

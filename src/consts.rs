@@ -21,6 +21,8 @@ pub enum Request {
     SaveMode = 1102,
 }
 
+pub const OPENRGB_PROTOCOL_VERSION: u32 = 0x3;
+
 pub const QMK_USAGE_PAGE: u16 = 0xFF60;
 pub const QMK_USAGE_ID: u16 = 0x61;
 

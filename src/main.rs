@@ -18,11 +18,10 @@ use tokio::{
 
 use consts::{
     DEVICE_TYPE_KEYBOARD, MODE_FLAG_HAS_MODE_SPECIFIC_COLOR, MODE_FLAG_HAS_PER_LED_COLOR,
-    MODE_FLAG_HAS_RANDOM_COLOR, Request, ZONE_TYPE_MATRIX, openrgb_keycode,
+    MODE_FLAG_HAS_RANDOM_COLOR, OPENRGB_PROTOCOL_VERSION, Request, ZONE_TYPE_MATRIX,
+    openrgb_keycode,
 };
 use keyboard::Keyboard;
-
-const OPENRGB_PROTOCOL_VERSION: u32 = 0x3;
 
 #[tokio::main]
 async fn main() -> Result<()> {
