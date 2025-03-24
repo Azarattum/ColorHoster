@@ -63,6 +63,27 @@ impl Keyboard {
         &self.keymap
     }
 
+    pub async fn reset_brightness(&mut self) -> Result<()> {
+        let device = &self.device;
+        let handles: Vec<_> = vec![255u8; self.colors.1.len()]
+            .chunk_changed(32 - 5, &self.colors.1)
+            .map(|(local_offset, chunk)| {
+                let mut report: [u8; 32] = [0; 32];
+                report[0] = QMK_CUSTOM_SET_COMMAND;
+                report[1] = QMK_CUSTOM_CHANNEL;
+                report[2] = QMK_COMMAND_MATRIX_BRIGHTNESS;
+                report[3] = local_offset as u8;
+                report[4] = chunk.len() as u8;
+                report[5..(5 + chunk.len())].copy_from_slice(chunk);
+                return report;
+            })
+            .map(|report| async move { device.send_report(report).await })
+            .collect();
+
+        future::join_all(handles).await;
+        Ok(())
+    }
+
     pub async fn update_colors(
         &mut self,
         colors: Vec<Rgb>,

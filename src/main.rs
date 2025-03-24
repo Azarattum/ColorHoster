@@ -32,7 +32,7 @@ use keyboard::Keyboard;
 #[derive(Parser, Debug)]
 #[command(
     version,
-    after_help = "\x1b[1;4mExample:\x1b[0m ./ColorHoster -j ./p1_he_ansi_v1.0.json"
+    after_help = "\x1b[1;4mExample:\x1b[0m ./ColorHoster -b -j ./p1_he_ansi_v1.0.json"
 )]
 struct CLI {
     /// Set a directory to look for VIA `.json` definitions for keyboards (scans current directory by default)
@@ -42,6 +42,10 @@ struct CLI {
     /// Add a direct path to a VIA `.json` file (can be multiple)
     #[arg(short, long)]
     json: Vec<std::path::PathBuf>,
+
+    /// Allow direct mode to change brightness values
+    #[arg(short, long)]
+    brightness: bool,
 }
 
 #[tokio::main]
@@ -90,6 +94,15 @@ async fn start() -> Result<()> {
             .collect::<Vec<_>>(),
     );
 
+    if !args.brightness {
+        let handles = keyboards.iter().map(|keyboard| async {
+            let mut keyboard = keyboard.lock().await;
+            keyboard.reset_brightness().await
+        });
+
+        future::try_join_all(handles).await?;
+    }
+
     let port = 6742;
     let address = format!("127.0.0.1:{}", port);
     let listener = TcpListener::bind(&address).await?;
@@ -102,7 +115,7 @@ async fn start() -> Result<()> {
         let keyboard = keyboards.clone();
         tokio::spawn(async move {
             let mut client = "Unknown".to_string();
-            let reason = handle_connection(stream, &keyboard, &mut client)
+            let reason = handle_connection(stream, &keyboard, &mut client, args.brightness)
                 .await
                 .unwrap_err();
 
@@ -123,6 +136,7 @@ async fn handle_connection(
     mut stream: TcpStream,
     keyboards: &Vec<Mutex<Keyboard>>,
     client: &mut String,
+    with_brightness: bool,
 ) -> Result<()> {
     loop {
         let magic = stream.read_u32_le().await?;
@@ -133,7 +147,15 @@ async fn handle_connection(
         let device = stream.read_u32_le().await? as usize;
         let kind = stream.read_u32_le().await?;
 
-        handle_request(kind, device, keyboards, &mut stream, client).await?;
+        handle_request(
+            kind,
+            device,
+            keyboards,
+            &mut stream,
+            client,
+            with_brightness,
+        )
+        .await?;
     }
 }
 
@@ -143,6 +165,7 @@ async fn handle_request(
     keyboards: &Vec<Mutex<Keyboard>>,
     stream: &mut TcpStream,
     client: &mut String,
+    with_brightness: bool,
 ) -> Result<()> {
     let length = stream.read_u32_le().await?;
     let mut keyboard = keyboards
@@ -268,7 +291,9 @@ async fn handle_request(
             let led_index = stream.read_u32_le().await? as usize;
             let rgb = stream.read_rgb().await?;
 
-            keyboard.update_colors(vec![rgb], led_index, true).await?;
+            keyboard
+                .update_colors(vec![rgb], led_index, with_brightness)
+                .await?;
         }
         Some(Request::UpdateLeds) => {
             let _data_length = stream.read_u32_le().await?;
@@ -278,7 +303,7 @@ async fn handle_request(
                 colors.push(stream.read_rgb().await?);
             }
 
-            keyboard.update_colors(colors, 0, true).await?;
+            keyboard.update_colors(colors, 0, with_brightness).await?;
         }
         Some(Request::UpdateMode) => {
             let data_length = stream.read_u32_le().await?;
