@@ -35,7 +35,7 @@ use keyboard::Keyboard;
     after_help = "\x1b[1;4mExample:\x1b[0m ./ColorHoster -b -j ./p1_he_ansi_v1.0.json"
 )]
 struct CLI {
-    /// Set a directory to look for VIA `.json` definitions for keyboards (scans current directory by default)
+    /// Set a directory to look for VIA `.json` definitions for keyboards [default: ./]
     #[arg(short, long)]
     directory: Option<PathBuf>,
 
@@ -46,6 +46,14 @@ struct CLI {
     /// Allow direct mode to change brightness values
     #[arg(short, long)]
     brightness: bool,
+
+    /// Set a directory for storing and loading profiles [default: ./profiles]
+    #[arg(long)]
+    profiles: Option<PathBuf>,
+
+    /// Set the port to listen on
+    #[arg(short, long, default_value_t = 6742)]
+    port: u32,
 }
 
 #[tokio::main]
@@ -103,8 +111,15 @@ async fn start() -> Result<()> {
         future::try_join_all(handles).await?;
     }
 
-    let port = 6742;
-    let address = format!("127.0.0.1:{}", port);
+    let profiles_dir = args
+        .profiles
+        .unwrap_or(PathBuf::from_str("./profiles").unwrap());
+
+    if !profiles_dir.exists() {
+        tokio::fs::create_dir_all(&profiles_dir).await?;
+    }
+
+    let address = format!("127.0.0.1:{}", args.port);
     let listener = TcpListener::bind(&address).await?;
     debug!("Started TCP server at {}!", address);
     info!("The application is running successfully!");
@@ -113,11 +128,18 @@ async fn start() -> Result<()> {
         let (stream, _) = listener.accept().await?;
 
         let keyboard = keyboards.clone();
+        let profiles_dir = profiles_dir.clone();
         tokio::spawn(async move {
             let mut client = "Unknown".to_string();
-            let reason = handle_connection(stream, &keyboard, &mut client, args.brightness)
-                .await
-                .unwrap_err();
+            let reason = handle_connection(
+                stream,
+                &keyboard,
+                &mut client,
+                args.brightness,
+                profiles_dir,
+            )
+            .await
+            .unwrap_err();
 
             let is_disconnect = reason
                 .downcast_ref::<std::io::Error>()
@@ -137,6 +159,7 @@ async fn handle_connection(
     keyboards: &Vec<Mutex<Keyboard>>,
     client: &mut String,
     with_brightness: bool,
+    profiles_dir: PathBuf,
 ) -> Result<()> {
     loop {
         let magic = stream.read_u32_le().await?;
@@ -154,6 +177,7 @@ async fn handle_connection(
             &mut stream,
             client,
             with_brightness,
+            &profiles_dir,
         )
         .await?;
     }
@@ -166,6 +190,7 @@ async fn handle_request(
     stream: &mut TcpStream,
     client: &mut String,
     with_brightness: bool,
+    profiles_dir: &PathBuf,
 ) -> Result<()> {
     let length = stream.read_u32_le().await?;
     let mut keyboard = keyboards
@@ -336,6 +361,46 @@ async fn handle_request(
                 keyboard.update_effect(effect).await?;
             }
         }
+        Some(Request::SaveProfile) => {
+            let profile = stream.read_str(length as usize).await?;
+            let path = profiles_dir.join(format!("{profile}.json"));
+
+            let data = keyboard.save_state();
+            tokio::fs::write(&path, data).await?;
+        }
+        Some(Request::LoadProfile) => {
+            let profile = stream.read_str(length as usize).await?;
+            let path = profiles_dir.join(format!("{profile}.json"));
+
+            let data = tokio::fs::read_to_string(&path).await?;
+            keyboard.load_state(&data, with_brightness).await?;
+        }
+        Some(Request::DeleteProfile) => {
+            let profile = stream.read_str(length as usize).await?;
+            let path = profiles_dir.join(format!("{profile}.json"));
+            tokio::fs::remove_file(&path).await?;
+        }
+        Some(Request::GetProfileList) => {
+            let profiles: Vec<_> = profiles_dir
+                .read_dir()?
+                .filter_map(|x| x.ok())
+                .filter_map(|x| {
+                    let name = x.file_name().to_string_lossy().into_owned();
+                    Some(name.strip_suffix(".json")?.to_string())
+                })
+                .collect();
+
+            let mut buffer: Vec<u8> = Vec::new();
+            buffer.extend_from_slice(&0u32.to_le_bytes()); // Data size (will update later)
+            buffer.extend_from_slice(&(profiles.len() as u16).to_le_bytes());
+            for profile in profiles {
+                buffer.extend_from_str(&profile);
+            }
+            let buffer_length = buffer.len() as u32;
+            buffer[0..4].copy_from_slice(&buffer_length.to_le_bytes());
+
+            stream.write_response(kind, &buffer).await?;
+        }
         Some(_) => Err(anyhow!("Unknown request id {}!", kind))?,
         None => Err(anyhow!("Unknown request id {}!", kind))?,
     };
@@ -424,6 +489,7 @@ impl BufferExtensions for Vec<u8> {
 trait StreamExtensions {
     async fn read_rgb(&mut self) -> Result<Rgb<Srgb, f32>>;
     async fn write_response(&mut self, kind: u32, data: &[u8]) -> Result<()>;
+    async fn read_str(&mut self, len: usize) -> Result<String>;
 }
 
 impl StreamExtensions for TcpStream {
@@ -440,5 +506,11 @@ impl StreamExtensions for TcpStream {
         self.write_u32_le(data.len() as u32).await?;
         self.write_all(&data).await?;
         Ok(())
+    }
+
+    async fn read_str(&mut self, len: usize) -> Result<String> {
+        let mut buf: Vec<u8> = vec![0; len];
+        self.read_exact(&mut buf).await?;
+        Ok(String::from_utf8_lossy(&buf[..len - 1]).to_string())
     }
 }

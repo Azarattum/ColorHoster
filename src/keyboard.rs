@@ -1,6 +1,7 @@
 use anyhow::{Result, anyhow};
 use futures::future::{self};
 use palette::{Hsv, IntoColor, encoding::Srgb, rgb::Rgb};
+use serde::{Deserialize, Serialize};
 use std::borrow::Borrow;
 
 use crate::{
@@ -19,7 +20,11 @@ pub struct Keyboard {
     config: Config,
     keymap: Vec<u16>,
     device: KeyboardDevice,
+    state: KeyboardState,
+}
 
+#[derive(Serialize, Deserialize)]
+struct KeyboardState {
     colors: (Vec<(u8, u8)>, Vec<u8>),
     color: (u8, u8),
     brightness: u8,
@@ -50,12 +55,13 @@ impl Keyboard {
             config,
             keymap,
             device,
-
-            colors,
-            color,
-            brightness,
-            effect,
-            speed,
+            state: KeyboardState {
+                colors,
+                color,
+                brightness,
+                effect,
+                speed,
+            },
         })
     }
 
@@ -65,8 +71,8 @@ impl Keyboard {
 
     pub async fn reset_brightness(&mut self) -> Result<()> {
         let device = &self.device;
-        let handles: Vec<_> = vec![255u8; self.colors.1.len()]
-            .chunk_changed(32 - 5, &self.colors.1)
+        let handles: Vec<_> = vec![255u8; self.state.colors.1.len()]
+            .chunk_changed(32 - 5, &self.state.colors.1)
             .map(|(local_offset, chunk)| {
                 let mut report: [u8; 32] = [0; 32];
                 report[0] = QMK_CUSTOM_SET_COMMAND;
@@ -90,7 +96,7 @@ impl Keyboard {
         offset: usize,
         with_brightness: bool,
     ) -> Result<()> {
-        if offset + colors.len() > self.colors.0.len() {
+        if offset + colors.len() > self.state.colors.0.len() {
             return Err(anyhow!("Trying to update more leds than possible!"));
         }
 
@@ -107,7 +113,7 @@ impl Keyboard {
         report_template[1] = QMK_CUSTOM_CHANNEL;
 
         let chroma_reports = chroma
-            .chunk_changed((32 - 5) / 2, &self.colors.0[offset..])
+            .chunk_changed((32 - 5) / 2, &self.state.colors.0[offset..])
             .map(|(local_offset, chunk)| {
                 let mut chroma_report = report_template.clone();
                 chroma_report[2] = QMK_COMMAND_MATRIX_CHROMA;
@@ -118,7 +124,7 @@ impl Keyboard {
             });
 
         let brightness_reports = brightness
-            .chunk_changed(32 - 5, &self.colors.1[offset..])
+            .chunk_changed(32 - 5, &self.state.colors.1[offset..])
             .map(|(local_offset, chunk)| {
                 let mut brightness_report = report_template.clone();
                 brightness_report[2] = QMK_COMMAND_MATRIX_BRIGHTNESS;
@@ -139,9 +145,9 @@ impl Keyboard {
             .map(|report| async move { device.send_report(report).await })
             .collect();
 
-        self.colors.0[offset..offset + chroma.len()].copy_from_slice(&chroma);
+        self.state.colors.0[offset..offset + chroma.len()].copy_from_slice(&chroma);
         if with_brightness {
-            self.colors.1[offset..offset + brightness.len()].copy_from_slice(&brightness);
+            self.state.colors.1[offset..offset + brightness.len()].copy_from_slice(&brightness);
         }
 
         future::try_join_all(handles).await?;
@@ -149,10 +155,16 @@ impl Keyboard {
     }
 
     pub fn colors(&self) -> Vec<Rgb<Srgb, u8>> {
-        let colors = self.colors.0.iter().zip(&self.colors.1).map(|((h, s), v)| {
-            let rgb: Rgb = Hsv::new(*h, *s, *v).into_format().into_color();
-            return rgb.into_format();
-        });
+        let colors = self
+            .state
+            .colors
+            .0
+            .iter()
+            .zip(&self.state.colors.1)
+            .map(|((h, s), v)| {
+                let rgb: Rgb = Hsv::new(*h, *s, *v).into_format().into_color();
+                return rgb.into_format();
+            });
 
         return colors.collect();
     }
@@ -161,8 +173,8 @@ impl Keyboard {
         let hsv: Hsv = color.into_format().into_color();
         let hsv = hsv.into_format::<u8>();
 
-        if hsv.hue != self.color.0 || hsv.saturation != self.color.1 {
-            self.color = (hsv.hue.into(), hsv.saturation);
+        if hsv.hue != self.state.color.0 || hsv.saturation != self.state.color.1 {
+            self.state.color = (hsv.hue.into(), hsv.saturation);
             let mut report: [u8; 32] = [0; 32];
             report[0] = QMK_CUSTOM_SET_COMMAND;
             report[1] = QMK_RGB_MATRIX_CHANNEL;
@@ -175,15 +187,15 @@ impl Keyboard {
     }
 
     pub fn color(&self) -> Rgb<Srgb, u8> {
-        let rgb: Rgb = Hsv::new(self.color.0, self.color.1, 255)
+        let rgb: Rgb = Hsv::new(self.state.color.0, self.state.color.1, 255)
             .into_format()
             .into_color();
         return rgb.into_format();
     }
 
     pub async fn update_effect(&mut self, effect: u8) -> Result<()> {
-        if effect != self.effect {
-            self.effect = effect;
+        if effect != self.state.effect {
+            self.state.effect = effect;
             let mut report: [u8; 32] = [0; 32];
             report[0] = QMK_CUSTOM_SET_COMMAND;
             report[1] = QMK_RGB_MATRIX_CHANNEL;
@@ -195,12 +207,12 @@ impl Keyboard {
     }
 
     pub fn effect(&self) -> u8 {
-        self.effect
+        self.state.effect
     }
 
     pub async fn update_speed(&mut self, speed: u8) -> Result<()> {
-        if speed != self.speed {
-            self.speed = speed;
+        if speed != self.state.speed {
+            self.state.speed = speed;
             let mut report: [u8; 32] = [0; 32];
             report[0] = QMK_CUSTOM_SET_COMMAND;
             report[1] = QMK_RGB_MATRIX_CHANNEL;
@@ -212,12 +224,12 @@ impl Keyboard {
     }
 
     pub fn speed(&self) -> u8 {
-        self.speed
+        self.state.speed
     }
 
     pub async fn update_brightness(&mut self, brightness: u8) -> Result<()> {
-        if brightness != self.brightness {
-            self.brightness = brightness;
+        if brightness != self.state.brightness {
+            self.state.brightness = brightness;
             let mut report: [u8; 32] = [0; 32];
             report[0] = QMK_CUSTOM_SET_COMMAND;
             report[1] = QMK_RGB_MATRIX_CHANNEL;
@@ -229,11 +241,41 @@ impl Keyboard {
     }
 
     pub fn brightness(&self) -> u8 {
-        self.brightness
+        self.state.brightness
     }
 
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    pub fn save_state(&self) -> String {
+        serde_json::to_string(&self.state).unwrap()
+    }
+
+    pub async fn load_state(&mut self, state: &str, with_brightness: bool) -> Result<()> {
+        let state: KeyboardState = serde_json::from_str(state)?;
+        let colors: Vec<Rgb> = state
+            .colors
+            .0
+            .iter()
+            .zip(state.colors.1)
+            .map(|(chroma, brightness)| {
+                return Hsv::new(chroma.0, chroma.1, brightness)
+                    .into_format::<f32>()
+                    .into_color();
+            })
+            .collect();
+
+        let color: Rgb = Hsv::new(state.color.0, state.color.1, 255)
+            .into_format()
+            .into_color();
+
+        self.update_colors(colors, 0, with_brightness).await?;
+        self.update_color(color.into_format()).await?;
+        self.update_effect(state.effect).await?;
+        self.update_speed(state.speed).await?;
+        self.update_brightness(state.brightness).await?;
+        Ok(())
     }
 
     async fn load_colors(
