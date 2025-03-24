@@ -254,12 +254,10 @@ async fn handle_request(
                 };
                 buffer.extend_from_slice(&color_mode.to_le_bytes());
 
-                // TODO: I guess in per-key mode we should send colors for all keys instead (or not, see color section)
                 buffer.extend_from_slice(&(mode_colors as u16).to_le_bytes());
                 buffer.extend_from_color(&keyboard.color());
             }
 
-            // TODO: should we support more than a single zone?
             buffer.extend_from_slice(&(1u16).to_le_bytes());
 
             let leds_count = config.count_leds();
@@ -290,7 +288,6 @@ async fn handle_request(
                 }
             }
 
-            // TODO: are these per-key colors?
             buffer.extend_from_slice(&(leds_count as u16).to_le_bytes());
             for color in keyboard.colors() {
                 buffer.extend_from_color(&color);
