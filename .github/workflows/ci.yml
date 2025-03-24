@@ -47,4 +47,5 @@ jobs:
         uses: houseabsolute/actions-rust-release@v0
         with:
           executable-name: ColorHoster
+          changes-file: CHANGELOG.md
           target: ${{ matrix.platform.target }}
