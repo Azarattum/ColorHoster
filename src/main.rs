@@ -7,9 +7,11 @@ mod device;
 mod keyboard;
 
 use anyhow::{Result, anyhow};
+use clap::Parser;
 use futures::future;
+use itertools::Itertools;
 use palette::{encoding::Srgb, rgb::Rgb};
-use std::{fs, sync::Arc};
+use std::{fs, path::PathBuf, str::FromStr, sync::Arc};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -23,10 +25,48 @@ use consts::{
 };
 use keyboard::Keyboard;
 
+/// Color Hoster is OpenRGB compatible high-performance SDK server for VIA per-key RGB
+#[derive(Parser, Debug)]
+#[command(
+    version,
+    after_help = "\x1b[1;4mExample:\x1b[0m ./ColorHoster -j ./p1_he_ansi_v1.0.json"
+)]
+struct CLI {
+    /// Set a directory to look for VIA `.json` definitions for keyboards (scans current directory by default)
+    #[arg(short, long)]
+    directory: Option<PathBuf>,
+
+    /// Add a direct path to a VIA `.json` file (can be multiple)
+    #[arg(short, long)]
+    json: Vec<std::path::PathBuf>,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let json_str = vec![fs::read_to_string("./p1_he_ansi_v1.0.json")?];
-    let handles: Vec<_> = json_str.iter().map(|x| Keyboard::from_str(&x)).collect();
+    let args = CLI::parse();
+
+    let handles: Vec<_> = args
+        .directory
+        .unwrap_or(PathBuf::from_str(".").unwrap())
+        .read_dir()?
+        .filter_map(|path| {
+            let path = path.as_ref().ok()?.path();
+            if path.extension()?.to_str() == Some("json") {
+                Some(path)
+            } else {
+                None
+            }
+        })
+        .chain(args.json.into_iter())
+        .filter_map(|x| fs::read_to_string(x).ok())
+        .unique()
+        .map(|x| Keyboard::from_str(x))
+        .collect();
+
+    if handles.is_empty() {
+        return Err(anyhow!("No keyboard `.json` files found!"));
+    }
+
     let keyboards = future::try_join_all(handles).await?;
 
     println!("Connected to {}!", keyboards.join(", "));

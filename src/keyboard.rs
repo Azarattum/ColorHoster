@@ -28,8 +28,8 @@ pub struct Keyboard {
 }
 
 impl Keyboard {
-    pub async fn from_str(json_str: &str) -> Result<Keyboard> {
-        let config: Config = Config::from_str(json_str)?;
+    pub async fn from_str(json_str: String) -> Result<Keyboard> {
+        let config: Config = Config::from_str(&json_str)?;
         return Keyboard::from_config(config).await;
     }
 
