@@ -141,9 +141,10 @@ async fn start() -> Result<()> {
             .await
             .unwrap_err();
 
-            let is_disconnect = reason
-                .downcast_ref::<std::io::Error>()
-                .map_or(false, |e| e.kind() == std::io::ErrorKind::UnexpectedEof);
+            let is_disconnect = reason.downcast_ref::<std::io::Error>().map_or(false, |e| {
+                e.kind() == std::io::ErrorKind::UnexpectedEof
+                    || e.kind() == std::io::ErrorKind::ConnectionReset
+            });
 
             if is_disconnect {
                 debug!("Client \x1B[1m{client}\x1B[0m disconnected.");
