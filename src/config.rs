@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::consts::{
     MODE_FLAG_HAS_BRIGHTNESS, MODE_FLAG_HAS_MODE_SPECIFIC_COLOR, MODE_FLAG_HAS_PER_LED_COLOR,
-    MODE_FLAG_HAS_RANDOM_COLOR, MODE_FLAG_HAS_SPEED,
+    MODE_FLAG_HAS_RANDOM_COLOR, MODE_FLAG_HAS_SPEED, MODE_FLAG_MANUAL_SAVE,
 };
 
 type Position = (u8, u8);
@@ -113,6 +113,10 @@ impl Config {
 
                 if has_no_color && id != 0 {
                     flags = flags | MODE_FLAG_HAS_RANDOM_COLOR;
+                }
+
+                if flags & (MODE_FLAG_HAS_SPEED | MODE_FLAG_HAS_MODE_SPECIFIC_COLOR) != 0 {
+                    flags = flags | MODE_FLAG_MANUAL_SAVE;
                 }
 
                 return (name, id, flags);

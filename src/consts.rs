@@ -28,6 +28,7 @@ pub const QMK_USAGE_ID: u16 = 0x61;
 
 pub const QMK_CUSTOM_SET_COMMAND: u8 = 0x07;
 pub const QMK_CUSTOM_GET_COMMAND: u8 = 0x08;
+pub const QMK_CUSTOM_SAVE_COMMAND: u8 = 0x09;
 pub const QMK_KEYMAP_GET_COMMAND: u8 = 0x12;
 
 pub const QMK_CUSTOM_CHANNEL: u8 = 0x0;
@@ -47,6 +48,7 @@ pub const MODE_FLAG_HAS_BRIGHTNESS: u32 = 1 << 4;
 pub const MODE_FLAG_HAS_PER_LED_COLOR: u32 = 1 << 5;
 pub const MODE_FLAG_HAS_MODE_SPECIFIC_COLOR: u32 = 1 << 6;
 pub const MODE_FLAG_HAS_RANDOM_COLOR: u32 = 1 << 7;
+pub const MODE_FLAG_MANUAL_SAVE: u32 = 1 << 8;
 
 pub const ZONE_TYPE_MATRIX: i32 = 2;
 

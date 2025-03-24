@@ -320,8 +320,13 @@ async fn handle_request(
                 .update_colors(vec![rgb], led_index, with_brightness)
                 .await?;
         }
-        Some(Request::UpdateLeds) => {
+        Some(Request::UpdateLeds) | Some(Request::UpdateZoneLeds) => {
             let _data_length = stream.read_u32_le().await?;
+
+            if kind == Request::UpdateZoneLeds as u32 {
+                let _zone = stream.read_u32_le().await?;
+            }
+
             let led_count = stream.read_u16_le().await?;
             let mut colors: Vec<Rgb<Srgb, f32>> = Vec::new();
             for _ in 0..led_count {
@@ -330,7 +335,7 @@ async fn handle_request(
 
             keyboard.update_colors(colors, 0, with_brightness).await?;
         }
-        Some(Request::UpdateMode) => {
+        Some(Request::UpdateMode) | Some(Request::SaveMode) => {
             let data_length = stream.read_u32_le().await?;
             let effect = stream.read_i32_le().await? as u8;
             keyboard.update_effect(effect).await?;
@@ -348,6 +353,10 @@ async fn handle_request(
             if buffer.read_u16_le(name_length + 48)? > 0 {
                 let color = buffer.read_rgb(name_length + 50)?;
                 keyboard.update_color(color).await?;
+            }
+
+            if kind == Request::SaveMode as u32 {
+                keyboard.persist_state().await?;
             }
         }
         Some(Request::SetCustomMode) => {
@@ -400,6 +409,11 @@ async fn handle_request(
             buffer[0..4].copy_from_slice(&buffer_length.to_le_bytes());
 
             stream.write_response(kind, &buffer).await?;
+        }
+        Some(Request::ResizeZone) => {
+            // Keyboards do not support resizing zones, so we just consume the request
+            let _zone = stream.read_i32_le().await?;
+            let _size = stream.read_i32_le().await?;
         }
         Some(_) => Err(anyhow!("Unknown request id {}!", kind))?,
         None => Err(anyhow!("Unknown request id {}!", kind))?,

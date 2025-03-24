@@ -10,8 +10,8 @@ use crate::{
     consts::{
         QMK_COMMAND_BRIGHTNESS, QMK_COMMAND_COLOR, QMK_COMMAND_EFFECT,
         QMK_COMMAND_MATRIX_BRIGHTNESS, QMK_COMMAND_MATRIX_CHROMA, QMK_COMMAND_SPEED,
-        QMK_CUSTOM_CHANNEL, QMK_CUSTOM_GET_COMMAND, QMK_CUSTOM_SET_COMMAND, QMK_KEYMAP_GET_COMMAND,
-        QMK_RGB_MATRIX_CHANNEL,
+        QMK_CUSTOM_CHANNEL, QMK_CUSTOM_GET_COMMAND, QMK_CUSTOM_SAVE_COMMAND,
+        QMK_CUSTOM_SET_COMMAND, QMK_KEYMAP_GET_COMMAND, QMK_RGB_MATRIX_CHANNEL,
     },
     device::KeyboardDevice,
 };
@@ -275,6 +275,14 @@ impl Keyboard {
         self.update_effect(state.effect).await?;
         self.update_speed(state.speed).await?;
         self.update_brightness(state.brightness).await?;
+        Ok(())
+    }
+
+    pub async fn persist_state(&mut self) -> Result<()> {
+        let mut report: [u8; 32] = [0; 32];
+        report[0] = QMK_CUSTOM_SAVE_COMMAND;
+        report[1] = QMK_RGB_MATRIX_CHANNEL;
+        self.device.send_report(report).await?;
         Ok(())
     }
 
