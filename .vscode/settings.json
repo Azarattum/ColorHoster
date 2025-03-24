@@ -1,9 +1,11 @@
 {
   "cSpell.words": [
+    "chrono",
     "enumn",
     "evalexpr",
     "Flattenable",
     "Hoster",
+    "itertools",
     "keymap",
     "OPENRGB",
     "ORGB",

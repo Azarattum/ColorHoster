@@ -7,9 +7,12 @@ mod device;
 mod keyboard;
 
 use anyhow::{Result, anyhow};
+use chrono::Local;
 use clap::Parser;
+use fern::colors::{Color, ColoredLevelConfig};
 use futures::future;
 use itertools::Itertools;
+use log::{debug, error, info, warn};
 use palette::{encoding::Srgb, rgb::Rgb};
 use std::{fs, path::PathBuf, str::FromStr, sync::Arc};
 use tokio::{
@@ -43,6 +46,16 @@ struct CLI {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    setup_logger();
+    match start().await {
+        Err(e) => error!("{}", e),
+        _ => (),
+    };
+
+    Ok(())
+}
+
+async fn start() -> Result<()> {
     let args = CLI::parse();
 
     let handles: Vec<_> = args
@@ -69,7 +82,7 @@ async fn main() -> Result<()> {
 
     let keyboards = future::try_join_all(handles).await?;
 
-    println!("Connected to {}!", keyboards.join(", "));
+    debug!("Connected to {}!", keyboards.join(", "));
     let keyboards = Arc::new(
         keyboards
             .into_iter()
@@ -80,28 +93,37 @@ async fn main() -> Result<()> {
     let port = 6742;
     let address = format!("127.0.0.1:{}", port);
     let listener = TcpListener::bind(&address).await?;
-    println!("Started TCP server at {}!", address);
+    debug!("Started TCP server at {}!", address);
+    info!("The application is running successfully!");
 
     loop {
         let (stream, _) = listener.accept().await?;
 
         let keyboard = keyboards.clone();
         tokio::spawn(async move {
-            let reason = handle_connection(stream, &keyboard).await.unwrap_err();
+            let mut client = "Unknown".to_string();
+            let reason = handle_connection(stream, &keyboard, &mut client)
+                .await
+                .unwrap_err();
+
             let is_disconnect = reason
                 .downcast_ref::<std::io::Error>()
                 .map_or(false, |e| e.kind() == std::io::ErrorKind::UnexpectedEof);
 
             if is_disconnect {
-                println!("Client disconnected!");
+                debug!("Client \x1B[1m{client}\x1B[0m disconnected.");
             } else {
-                println!("Client handling error: {reason}");
+                warn!("\x1B[1m{client}\x1B[0m\x1B[33m disconnected due to an error: {reason}");
             }
         });
     }
 }
 
-async fn handle_connection(mut stream: TcpStream, keyboards: &Vec<Mutex<Keyboard>>) -> Result<()> {
+async fn handle_connection(
+    mut stream: TcpStream,
+    keyboards: &Vec<Mutex<Keyboard>>,
+    client: &mut String,
+) -> Result<()> {
     loop {
         let magic = stream.read_u32_le().await?;
         if magic != 1111970383 {
@@ -111,7 +133,7 @@ async fn handle_connection(mut stream: TcpStream, keyboards: &Vec<Mutex<Keyboard
         let device = stream.read_u32_le().await? as usize;
         let kind = stream.read_u32_le().await?;
 
-        handle_request(kind, device, keyboards, &mut stream).await?;
+        handle_request(kind, device, keyboards, &mut stream, client).await?;
     }
 }
 
@@ -120,6 +142,7 @@ async fn handle_request(
     device: usize,
     keyboards: &Vec<Mutex<Keyboard>>,
     stream: &mut TcpStream,
+    client: &mut String,
 ) -> Result<()> {
     let length = stream.read_u32_le().await?;
     let mut keyboard = keyboards
@@ -238,7 +261,8 @@ async fn handle_request(
         Some(Request::SetClientName) => {
             let mut name: Vec<u8> = vec![0; length as usize];
             stream.read_exact(&mut name).await?;
-            println!("Client {} joined us!", String::from_utf8_lossy(&name));
+            *client = String::from_utf8_lossy(&name).to_string();
+            debug!("Client \x1B[1m{}\x1B[0m connected.", client);
         }
         Some(Request::UpdateSingleLed) => {
             let led_index = stream.read_u32_le().await? as usize;
@@ -287,11 +311,42 @@ async fn handle_request(
                 keyboard.update_effect(effect).await?;
             }
         }
-        Some(_) => todo!("Unhandled request: {}", kind),
-        None => todo!("Unhandled request: {}", kind),
-    }
+        Some(_) => Err(anyhow!("Unknown request id {}!", kind))?,
+        None => Err(anyhow!("Unknown request id {}!", kind))?,
+    };
 
     anyhow::Ok(())
+}
+
+fn setup_logger() -> () {
+    let colors = ColoredLevelConfig::new()
+        .info(Color::Green)
+        .warn(Color::Yellow)
+        .error(Color::Red);
+
+    fern::Dispatch::new()
+        .format(move |out, message, record| {
+            out.finish(format_args!(
+                "\x1B[{}m{} \x1B[{}m{} \x1B[0m\x1B[1m[{}]\x1B[0m: \x1B[{}m{} \x1B[0m",
+                Color::BrightBlack.to_fg_str(),
+                Local::now().format("%H:%M:%S").to_string(),
+                colors.get_color(&record.level()).to_fg_str(),
+                match record.level() {
+                    log::Level::Error => "!",
+                    log::Level::Warn => "?",
+                    log::Level::Info => "+",
+                    log::Level::Debug => "|",
+                    log::Level::Trace => "->",
+                },
+                record.target(),
+                colors.get_color(&record.level()).to_fg_str(),
+                message
+            ))
+        })
+        .level(log::LevelFilter::Debug)
+        .chain(std::io::stdout())
+        .apply()
+        .unwrap();
 }
 
 trait BufferExtensions {
