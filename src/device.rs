@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow};
 use async_hid::{AccessMode, Device, DeviceInfo};
-use futures_lite::StreamExt;
+use futures::{StreamExt, future::ready};
 use std::{
     pin::Pin,
     sync::{Arc, Mutex},
@@ -22,15 +22,16 @@ impl KeyboardDevice {
     pub async fn from_ids(vendor_id: u16, product_id: u16) -> Result<Self> {
         let hid = DeviceInfo::enumerate()
             .await?
-            .find(|info: &DeviceInfo| {
-                info.matches(QMK_USAGE_PAGE, QMK_USAGE_ID, vendor_id, product_id)
-            })
+            .filter(|info| ready(info.matches(QMK_USAGE_PAGE, QMK_USAGE_ID, vendor_id, product_id)))
+            .next()
             .await
-            .ok_or(anyhow!(
-                "A device cannot be detected (VID: {}, PID: {})!",
-                vendor_id,
-                product_id
-            ))?
+            .ok_or_else(|| {
+                anyhow!(
+                    "A device cannot be detected (VID: {}, PID: {})!",
+                    vendor_id,
+                    product_id
+                )
+            })?
             .open(AccessMode::ReadWrite)
             .await?;
 

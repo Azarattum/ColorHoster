@@ -36,7 +36,7 @@ pub async fn handle(
         .lock()
         .await;
 
-    match Request::n(request) {
+    match Request::try_from(request).ok() {
         Some(Request::GetControllerCount) => {
             let count: u32 = ctx.keyboards.len() as u32;
             stream.write_response(request, &count.to_le_bytes()).await?;
