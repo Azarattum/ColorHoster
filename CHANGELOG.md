@@ -1,3 +1,7 @@
+## 0.1.7
+
+- Fixed ANSI backslash keycode
+
 ## 0.1.6
 
 - Improved windows support
