@@ -1,18 +1,35 @@
+use std::io::IsTerminal;
+
 use anyhow::{Error, Result};
 use chrono::Local;
 use colored::Colorize;
-use fern::colors::{Color, ColoredLevelConfig};
+use fern::{
+    Output,
+    colors::{Color, ColoredLevelConfig},
+    log_file,
+};
 use palette::{encoding::Srgb, rgb::Rgb};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
 };
 
+#[cfg(windows)]
+const LOG_FILE: &'static str = "C:\\Windows\\Temp\\colorhoster.log";
+#[cfg(any(unix, target_os = "macos"))]
+const LOG_FILE: &'static str = "/tmp/colorhoster.log";
+
 pub fn setup_logger() -> () {
     let colors = ColoredLevelConfig::new()
         .info(Color::Green)
         .warn(Color::Yellow)
         .error(Color::Red);
+
+    let output = if std::io::stdout().is_terminal() {
+        Output::from(std::io::stdout())
+    } else {
+        Output::from(log_file(LOG_FILE).expect("Failed to open log file!"))
+    };
 
     fern::Dispatch::new()
         .format(move |out, message, record| {
@@ -33,7 +50,7 @@ pub fn setup_logger() -> () {
             ))
         })
         .level(log::LevelFilter::Debug)
-        .chain(std::io::stdout())
+        .chain(output)
         .apply()
         .unwrap();
 }

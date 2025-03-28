@@ -4,6 +4,7 @@ use log::debug;
 use palette::{encoding::Srgb, rgb::Rgb};
 use std::{path::PathBuf, sync::Arc};
 use tokio::{io::AsyncReadExt, net::TcpStream, sync::Mutex};
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     consts::{
@@ -20,6 +21,7 @@ pub struct HandlerContext {
     pub client: String,
     pub with_brightness: bool,
     pub profiles_dir: PathBuf,
+    pub interrupt: CancellationToken,
 }
 
 pub async fn handle(

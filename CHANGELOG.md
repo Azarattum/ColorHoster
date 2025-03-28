@@ -1,3 +1,8 @@
+## 0.2.0
+
+- Added experimental service mode
+- Fixed race condition on program init
+
 ## 0.1.7
 
 - Fixed ANSI backslash keycode

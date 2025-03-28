@@ -9,18 +9,24 @@ mod keyboard;
 mod utils;
 
 use anyhow::{Result, anyhow};
-use clap::Parser;
+use ceviche::controller::*;
+use ceviche::{Service, ServiceEvent};
+use clap::{Parser, ValueEnum};
 use colored::Colorize;
 use futures::future;
 use handlers::{HandlerContext, handle};
 use itertools::Itertools;
 use log::{debug, error, info, warn};
+use std::env;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::{fs, path::PathBuf, str::FromStr, sync::Arc};
+use tokio::runtime::Runtime;
 use tokio::{
     io::AsyncReadExt,
     net::{TcpListener, TcpStream},
     sync::Mutex,
 };
+use tokio_util::sync::CancellationToken;
 
 use keyboard::Keyboard;
 use utils::ErrorExt;
@@ -51,19 +57,98 @@ struct CLI {
     /// Set the port to listen on
     #[arg(short, long, default_value_t = 6742)]
     port: u32,
+
+    /// Manage Color Hoster service
+    #[arg(short, long)]
+    service: Option<ServiceAction>,
 }
 
-#[tokio::main]
-async fn main() {
-    utils::setup_logger();
-    if let Err(error) = listen().await {
-        error!("{}", error);
+#[derive(Clone, Debug, ValueEnum)]
+enum ServiceAction {
+    Create,
+    Delete,
+    Start,
+    Stop,
+}
+
+fn main() {
+    let mut controller = Controller::new(
+        "colorhoster",
+        "Color Hoster",
+        "OpenRGB compatible high-performance SDK server for VIA per-key RGB.",
+    );
+
+    let result: Result<()> = match CLI::parse().service {
+        Some(ServiceAction::Create) => controller.create().map_err(|x| x.into()),
+        Some(ServiceAction::Delete) => controller.delete().map_err(|x| x.into()),
+        Some(ServiceAction::Start) => controller.start().map_err(|x| x.into()),
+        Some(ServiceAction::Stop) => controller.stop().map_err(|x| x.into()),
+        None => {
+            let (tx, rx) = mpsc::channel();
+            let _tx = tx.clone();
+
+            match ctrlc::set_handler(move || {
+                _ = tx.send(ServiceEvent::Stop);
+            }) {
+                Err(error) => Err(error.into()),
+                Ok(()) => {
+                    service_main(rx, _tx, env::args().collect(), true);
+                    Ok(())
+                }
+            }
+        }
+    };
+
+    if let Err(error) = result {
+        utils::setup_logger();
+        error!("Error: {error}");
     }
 }
 
-async fn listen() -> Result<()> {
-    let args = CLI::parse();
+Service!("colorhoster", service_main);
+fn service_main(
+    rx: Receiver<ServiceEvent<()>>,
+    _tx: Sender<ServiceEvent<()>>,
+    args: Vec<String>,
+    _standalone_mode: bool,
+) -> u32 {
+    utils::setup_logger();
+    let args = CLI::parse_from(args);
+    let interrupt = CancellationToken::new();
+    let runtime = Runtime::new().expect("Failed to create async runtime!");
 
+    let result = runtime.block_on(async {
+        let service_task = tokio::spawn(run(args, interrupt.clone()));
+        let stop_monitor = tokio::task::spawn_blocking(move || {
+            while let Ok(ServiceEvent::Stop) = rx.recv() {
+                interrupt.cancel();
+                break;
+            }
+        });
+
+        tokio::pin!(service_task);
+        tokio::select! {
+            result = &mut service_task => result,
+            _ = stop_monitor => service_task.await,
+        }
+    });
+
+    runtime.shutdown_background();
+
+    match result {
+        Ok(Ok(())) => return 0,
+        Ok(Err(error)) => {
+            error!("Error: {}", error);
+            return 1;
+        }
+        Err(error) => {
+            error!("Task execution failed: {}", error);
+            return 1;
+        }
+    }
+}
+
+async fn run(args: CLI, interrupt: CancellationToken) -> Result<()> {
     let keyboards = load_keyboards(args.directory, args.json).await?;
     reset_brightness(&keyboards, args.brightness).await?;
 
@@ -76,10 +161,14 @@ async fn listen() -> Result<()> {
     info!("The application is running successfully!");
 
     loop {
-        let (stream, _) = listener.accept().await?;
+        let (stream, _) = tokio::select! {
+            client = listener.accept() => client?,
+            _ = interrupt.cancelled() => return Ok(()),
+        };
 
         let mut ctx = HandlerContext {
             keyboards: keyboards.clone(),
+            interrupt: interrupt.clone(),
             client: "Unknown".to_string(),
             with_brightness: args.brightness,
             profiles_dir: profiles_dir.clone(),
@@ -102,7 +191,10 @@ async fn listen() -> Result<()> {
 
 async fn handle_connection(mut stream: TcpStream, ctx: &mut HandlerContext) -> Result<()> {
     loop {
-        let magic = stream.read_u32_le().await?;
+        let magic = tokio::select! {
+            data = stream.read_u32_le() => data?,
+            _ = ctx.interrupt.cancelled() => return Ok(()),
+        };
         if magic != 1111970383 {
             return Err(anyhow!("Invalid packet header!"));
         }

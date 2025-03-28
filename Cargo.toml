@@ -1,14 +1,16 @@
 [package]
 name = "ColorHoster"
-version = "0.1.7"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
 anyhow = "1.0.97"
 async-hid = "0.2.0"
+ceviche = "0.6.1"
 chrono = "0.4.40"
 clap = { version = "4.5.32", features = ["derive"] }
 colored = "3.0.0"
+ctrlc = "3.4.5"
 evalexpr = "12.0.2"
 fern = { version = "0.7.1", features = ["colored"] }
 futures = "0.3.31"
