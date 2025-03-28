@@ -6,15 +6,20 @@ use std::{
     sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
 };
-use tokio::sync::mpsc::{self, Sender};
+use tokio::sync::{
+    mpsc::{self, Sender},
+    oneshot,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::consts::{QMK_USAGE_ID, QMK_USAGE_PAGE};
 
+type ReportRequest = (Vec<u8>, FutureReportState, oneshot::Sender<()>);
+
 pub struct KeyboardDevice {
     hid: Arc<Device>,
     listener: CancellationToken,
-    reporter: Sender<(Vec<u8>, FutureReportState)>,
+    reporter: Sender<ReportRequest>,
     win_lock: tokio::sync::Mutex<()>,
 }
 
@@ -41,7 +46,7 @@ impl KeyboardDevice {
         let listener = CancellationToken::new();
         let signal = listener.clone();
 
-        let (reporter, mut receiver) = mpsc::channel::<(Vec<u8>, FutureReportState)>(32);
+        let (reporter, mut receiver) = mpsc::channel::<ReportRequest>(32);
 
         tokio::spawn(async move {
             let mut requests: Vec<(Vec<u8>, FutureReportState)> = Vec::new();
@@ -57,7 +62,8 @@ impl KeyboardDevice {
                     _ = signal.cancelled() => { return; }
 
                     Some(request) = receiver.recv() => {
-                        requests.push(request);
+                        requests.push((request.0, request.1));
+                        _ = request.2.send(());
                     }
 
                     _ = hid.read_input_report(&mut buffer) => {
@@ -114,7 +120,10 @@ impl KeyboardDevice {
             waker: None,
         }));
 
-        self.reporter.send((prefix, state.clone())).await?;
+        let (ack_tx, ack_rx) = oneshot::channel();
+        self.reporter.send((prefix, state.clone(), ack_tx)).await?;
+        ack_rx.await?;
+
         self.send_report(report).await?;
         Ok(FutureReport { state }.await)
     }
