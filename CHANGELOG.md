@@ -1,3 +1,7 @@
+## 0.3.1
+
+- Fixed buffer reports on Linux (potentially)
+
 ## 0.3.0
 
 - (breaking) Made default directory for `.json` files and profiles relative to the executable directory
