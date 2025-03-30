@@ -83,7 +83,7 @@ fn main() {
         Some(ServiceAction::Delete) => controller.delete().map_err(|x| x.into()),
         Some(ServiceAction::Start) => controller.start().map_err(|x| x.into()),
         Some(ServiceAction::Stop) => controller.stop().map_err(|x| x.into()),
-        None => {
+        None => controller.register(service_main_wrapper).or_else(|_| {
             let (tx, rx) = mpsc::channel();
             let _tx = tx.clone();
 
@@ -96,7 +96,7 @@ fn main() {
                     Ok(())
                 }
             }
-        }
+        }),
     };
 
     if let Err(error) = result {
