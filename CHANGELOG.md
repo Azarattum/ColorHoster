@@ -1,3 +1,9 @@
+## 0.3.0
+
+- (breaking) Made default directory for `.json` files and profiles relative to the executable directory
+- Improved service mode stability on windows
+- More stable interruptions and better logs
+
 ## 0.2.0
 
 - Added experimental service mode
