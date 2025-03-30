@@ -19,7 +19,7 @@ use itertools::Itertools;
 use log::{debug, error, info, warn};
 use std::env;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::{fs, path::PathBuf, str::FromStr, sync::Arc};
+use std::{fs, path::PathBuf, sync::Arc};
 use tokio::runtime::Runtime;
 use tokio::{
     io::AsyncReadExt,
@@ -38,7 +38,7 @@ use utils::ErrorExt;
     after_help = format!("{} ./ColorHoster -b -j ./p1_he_ansi_v1.0.json", "Example:".bold())
 )]
 struct CLI {
-    /// Set a directory to look for VIA `.json` definitions for keyboards [default: ./]
+    /// Set a directory to look for VIA `.json` definitions for keyboards [default: <executable directory>]
     #[arg(short, long)]
     directory: Option<PathBuf>,
 
@@ -210,8 +210,14 @@ async fn load_keyboards(
     directory: Option<PathBuf>,
     json: Vec<PathBuf>,
 ) -> Result<Arc<Vec<Mutex<Keyboard>>>> {
+    let default_directory = std::env::current_exe()
+        .expect("Failed to get current executable path!")
+        .parent()
+        .expect("Failed to get parent directory of current executable!")
+        .to_path_buf();
+
     let handles: Vec<_> = directory
-        .unwrap_or(PathBuf::from_str(".").unwrap())
+        .unwrap_or(default_directory)
         .read_dir()?
         .filter_map(|path| {
             let path = path.as_ref().ok()?.path();
