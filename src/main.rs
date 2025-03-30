@@ -152,7 +152,10 @@ async fn run(args: CLI, interrupt: CancellationToken) -> Result<()> {
     let keyboards = load_keyboards(args.directory, args.json).await?;
     reset_brightness(&keyboards, args.brightness).await?;
 
-    let profiles_dir = args.profiles.unwrap_or_else(|| PathBuf::from("./profiles"));
+    let profiles_dir = args
+        .profiles
+        .unwrap_or_else(|| current_dir().join(PathBuf::from("./profiles")));
+
     tokio::fs::create_dir_all(&profiles_dir).await?;
 
     let address = format!("127.0.0.1:{}", args.port);
@@ -210,14 +213,8 @@ async fn load_keyboards(
     directory: Option<PathBuf>,
     json: Vec<PathBuf>,
 ) -> Result<Arc<Vec<Mutex<Keyboard>>>> {
-    let default_directory = std::env::current_exe()
-        .expect("Failed to get current executable path!")
-        .parent()
-        .expect("Failed to get parent directory of current executable!")
-        .to_path_buf();
-
     let handles: Vec<_> = directory
-        .unwrap_or(default_directory)
+        .unwrap_or(current_dir())
         .read_dir()?
         .filter_map(|path| {
             let path = path.as_ref().ok()?.path();
@@ -257,4 +254,12 @@ async fn reset_brightness(
     }
 
     Ok(())
+}
+
+fn current_dir() -> PathBuf {
+    std::env::current_exe()
+        .expect("Failed to get current executable path!")
+        .parent()
+        .expect("Failed to get parent directory of current executable!")
+        .to_path_buf()
 }
