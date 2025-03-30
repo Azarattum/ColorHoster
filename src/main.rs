@@ -175,15 +175,15 @@ async fn run(args: CLI, interrupt: CancellationToken) -> Result<()> {
         };
 
         tokio::spawn(async move {
-            let error = handle_connection(stream, &mut ctx).await.unwrap_err();
-
-            if error.is_disconnect() {
-                debug!("Client {} disconnected.", ctx.client.bold());
-            } else {
-                warn!(
-                    "{} disconnected due to an error: {error}",
+            match handle_connection(stream, &mut ctx).await {
+                Err(error) if error.is_disconnect() => {
+                    debug!("Client {} disconnected.", ctx.client.bold())
+                }
+                Err(error) => warn!(
+                    "{}\x1B[33m disconnected due to an error: {error}",
                     ctx.client.bold()
-                );
+                ),
+                Ok(()) => (),
             }
         });
     }

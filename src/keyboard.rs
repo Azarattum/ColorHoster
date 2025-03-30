@@ -248,8 +248,8 @@ impl Keyboard {
         &self.config
     }
 
-    pub fn save_state(&self) -> String {
-        serde_json::to_string(&self.state).unwrap()
+    pub fn save_state(&self) -> Result<String> {
+        serde_json::to_string(&self.state).map_err(|x| x.into())
     }
 
     pub async fn load_state(&mut self, state: &str, with_brightness: bool) -> Result<()> {

@@ -212,7 +212,7 @@ pub async fn handle(
             let profile = stream.read_str(length as usize).await?;
             let path = ctx.profiles_dir.join(format!("{profile}.json"));
 
-            let data = keyboard.save_state();
+            let data = keyboard.save_state()?;
             tokio::fs::write(&path, data).await?;
         }
         Some(Request::LoadProfile) => {

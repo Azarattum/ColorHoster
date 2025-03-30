@@ -52,7 +52,7 @@ pub fn setup_logger() -> () {
         .level(log::LevelFilter::Debug)
         .chain(output)
         .apply()
-        .unwrap();
+        .expect("Failed to setup logger!");
 }
 
 pub trait BufferExt {
