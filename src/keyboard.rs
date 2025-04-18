@@ -393,7 +393,7 @@ impl Keyboard {
                 report[3] = (keymap_chunk_size.min((count * 2) - i * keymap_chunk_size)) as u8;
                 return report;
             })
-            .map(|report| async move { device.request_report(report, 5).await });
+            .map(|report| async move { device.request_report(report, 4).await });
 
         future::try_join_all(requests)
             .await?

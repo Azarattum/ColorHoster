@@ -1,3 +1,7 @@
+## 0.3.2
+
+- Fixed loading keymap layout on some keyboards (tested with Keychron Q6 HE)
+
 ## 0.3.1
 
 - Fixed buffer reports on Linux (potentially)
