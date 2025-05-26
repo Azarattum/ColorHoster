@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow};
-use async_hid::{AccessMode, Device, DeviceInfo};
+use async_hid::{AsyncHidRead, AsyncHidWrite, DeviceWriter, HidBackend};
 use futures::{StreamExt, future::ready};
 use std::{
     pin::Pin,
@@ -17,15 +17,15 @@ use crate::consts::{QMK_USAGE_ID, QMK_USAGE_PAGE};
 type ReportRequest = (Vec<u8>, FutureReportState, oneshot::Sender<()>);
 
 pub struct KeyboardDevice {
-    hid: Arc<Device>,
+    writer: Arc<tokio::sync::Mutex<DeviceWriter>>,
     listener: CancellationToken,
     reporter: Sender<ReportRequest>,
-    win_lock: tokio::sync::Mutex<()>,
 }
 
 impl KeyboardDevice {
     pub async fn from_ids(vendor_id: u16, product_id: u16) -> Result<Self> {
-        let hid = DeviceInfo::enumerate()
+        let (mut reader, writer) = HidBackend::default()
+            .enumerate()
             .await?
             .filter(|info| ready(info.matches(QMK_USAGE_PAGE, QMK_USAGE_ID, vendor_id, product_id)))
             .next()
@@ -37,11 +37,8 @@ impl KeyboardDevice {
                     product_id
                 )
             })?
-            .open(AccessMode::ReadWrite)
+            .open()
             .await?;
-
-        let hid = Arc::new(hid);
-        let weak_hid = Arc::downgrade(&hid);
 
         let listener = CancellationToken::new();
         let signal = listener.clone();
@@ -52,11 +49,6 @@ impl KeyboardDevice {
             let mut requests: Vec<(Vec<u8>, FutureReportState)> = Vec::new();
 
             loop {
-                let hid = match weak_hid.upgrade() {
-                    None => return,
-                    Some(x) => x,
-                };
-
                 let mut buffer = [0u8; 32];
                 tokio::select! {
                     _ = signal.cancelled() => { return; }
@@ -66,7 +58,7 @@ impl KeyboardDevice {
                         _ = request.2.send(());
                     }
 
-                    _ = hid.read_input_report(&mut buffer) => {
+                    _ = reader.read_input_report(&mut buffer) => {
                         requests.retain(|x| {
                             if buffer.starts_with(&x.0) {
                                 let mut state = x.1.lock().unwrap();
@@ -85,37 +77,29 @@ impl KeyboardDevice {
         });
 
         Ok(KeyboardDevice {
-            hid,
+            writer: Arc::new(tokio::sync::Mutex::new(writer)),
             reporter,
             listener,
-            win_lock: tokio::sync::Mutex::new(()),
         })
     }
 
     pub async fn send_report(&self, report: [u8; 32]) -> Result<()> {
-        if cfg!(target_os = "macos") {
-            self.hid
-                .write_output_report(&report)
-                .await
-                .map_err(|err| anyhow::Error::from(err))?;
-        } else {
-            let mut report_with_id = [0u8; 33];
-            report_with_id[1..33].copy_from_slice(&report);
+        let mut report_with_id = [0u8; 33];
+        report_with_id[1..33].copy_from_slice(&report);
 
-            let lock = self.win_lock.lock().await;
-            self.hid
-                .write_output_report(&report_with_id)
-                .await
-                .map_err(|err| anyhow::Error::from(err))?;
-            drop(lock);
-        }
+        self.writer
+            .lock()
+            .await
+            .write_output_report(&report_with_id)
+            .await
+            .map_err(|err| anyhow::Error::from(err))?;
 
         Ok(())
     }
 
     pub async fn request_report(&self, report: [u8; 32], ref_bytes: usize) -> Result<[u8; 32]> {
         let prefix = report[..ref_bytes].to_vec();
-        let state = Arc::new(Mutex::new(ReportFutureInner {
+        let state = Arc::new(std::sync::Mutex::new(ReportFutureInner {
             data: None,
             waker: None,
         }));
