@@ -6,6 +6,7 @@ mod consts;
 mod device;
 mod handlers;
 mod keyboard;
+mod report;
 mod utils;
 
 use anyhow::{Result, anyhow};

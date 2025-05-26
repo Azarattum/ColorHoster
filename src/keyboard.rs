@@ -19,7 +19,7 @@ use crate::{
 pub struct Keyboard {
     config: Config,
     keymap: Vec<u16>,
-    device: KeyboardDevice,
+    device: KeyboardDevice<33>, // TODO: make this configurable
     state: KeyboardState,
 }
 
@@ -71,13 +71,16 @@ impl Keyboard {
 
     pub async fn reset_brightness(&mut self) -> Result<()> {
         let device = &self.device;
+
+        let mut report_template = device.create_report();
+        report_template[0] = QMK_CUSTOM_SET_COMMAND;
+        report_template[1] = QMK_CUSTOM_CHANNEL;
+        report_template[2] = QMK_COMMAND_MATRIX_BRIGHTNESS;
+
         let handles: Vec<_> = vec![255u8; self.state.colors.1.len()]
-            .chunk_changed(32 - 5, &self.state.colors.1)
+            .chunk_changed(report_template.len() - 5, &self.state.colors.1)
             .map(|(local_offset, chunk)| {
-                let mut report: [u8; 32] = [0; 32];
-                report[0] = QMK_CUSTOM_SET_COMMAND;
-                report[1] = QMK_CUSTOM_CHANNEL;
-                report[2] = QMK_COMMAND_MATRIX_BRIGHTNESS;
+                let mut report = report_template.clone();
                 report[3] = local_offset as u8;
                 report[4] = chunk.len() as u8;
                 report[5..(5 + chunk.len())].copy_from_slice(chunk);
@@ -108,12 +111,15 @@ impl Keyboard {
         let brightness: Vec<_> = hsv_colors.clone().map(|x| x.value).collect();
         let chroma: Vec<_> = hsv_colors.map(|x| (x.hue.into(), x.saturation)).collect();
 
-        let mut report_template: [u8; 32] = [0; 32];
+        let mut report_template = self.device.create_report();
         report_template[0] = QMK_CUSTOM_SET_COMMAND;
         report_template[1] = QMK_CUSTOM_CHANNEL;
 
         let chroma_reports = chroma
-            .chunk_changed((32 - 5) / 2, &self.state.colors.0[offset..])
+            .chunk_changed(
+                (report_template.len() - 5) / 2,
+                &self.state.colors.0[offset..],
+            )
             .map(|(local_offset, chunk)| {
                 let mut chroma_report = report_template.clone();
                 chroma_report[2] = QMK_COMMAND_MATRIX_CHROMA;
@@ -124,7 +130,7 @@ impl Keyboard {
             });
 
         let brightness_reports = brightness
-            .chunk_changed(32 - 5, &self.state.colors.1[offset..])
+            .chunk_changed(report_template.len() - 5, &self.state.colors.1[offset..])
             .map(|(local_offset, chunk)| {
                 let mut brightness_report = report_template.clone();
                 brightness_report[2] = QMK_COMMAND_MATRIX_BRIGHTNESS;
@@ -175,7 +181,7 @@ impl Keyboard {
 
         if hsv.hue != self.state.color.0 || hsv.saturation != self.state.color.1 {
             self.state.color = (hsv.hue.into(), hsv.saturation);
-            let mut report: [u8; 32] = [0; 32];
+            let mut report = self.device.create_report();
             report[0] = QMK_CUSTOM_SET_COMMAND;
             report[1] = QMK_RGB_MATRIX_CHANNEL;
             report[2] = QMK_COMMAND_COLOR;
@@ -196,7 +202,7 @@ impl Keyboard {
     pub async fn update_effect(&mut self, effect: u8) -> Result<()> {
         if effect != self.state.effect {
             self.state.effect = effect;
-            let mut report: [u8; 32] = [0; 32];
+            let mut report = self.device.create_report();
             report[0] = QMK_CUSTOM_SET_COMMAND;
             report[1] = QMK_RGB_MATRIX_CHANNEL;
             report[2] = QMK_COMMAND_EFFECT;
@@ -213,7 +219,7 @@ impl Keyboard {
     pub async fn update_speed(&mut self, speed: u8) -> Result<()> {
         if speed != self.state.speed {
             self.state.speed = speed;
-            let mut report: [u8; 32] = [0; 32];
+            let mut report = self.device.create_report();
             report[0] = QMK_CUSTOM_SET_COMMAND;
             report[1] = QMK_RGB_MATRIX_CHANNEL;
             report[2] = QMK_COMMAND_SPEED;
@@ -230,7 +236,7 @@ impl Keyboard {
     pub async fn update_brightness(&mut self, brightness: u8) -> Result<()> {
         if brightness != self.state.brightness {
             self.state.brightness = brightness;
-            let mut report: [u8; 32] = [0; 32];
+            let mut report = self.device.create_report();
             report[0] = QMK_CUSTOM_SET_COMMAND;
             report[1] = QMK_RGB_MATRIX_CHANNEL;
             report[2] = QMK_COMMAND_BRIGHTNESS;
@@ -279,24 +285,24 @@ impl Keyboard {
     }
 
     pub async fn persist_state(&mut self) -> Result<()> {
-        let mut report: [u8; 32] = [0; 32];
+        let mut report = self.device.create_report();
         report[0] = QMK_CUSTOM_SAVE_COMMAND;
         report[1] = QMK_RGB_MATRIX_CHANNEL;
         self.device.send_report(report).await?;
         Ok(())
     }
 
-    async fn load_colors(
-        device: &KeyboardDevice,
+    async fn load_colors<const N: usize>(
+        device: &KeyboardDevice<N>,
         count: usize,
     ) -> Result<(Vec<(u8, u8)>, Vec<u8>)> {
         let mut colors = (vec![(0, 0); count], vec![255; count]);
 
-        let mut report_template: [u8; 32] = [0; 32];
+        let mut report_template = device.create_report();
         report_template[0] = QMK_CUSTOM_GET_COMMAND;
         report_template[1] = QMK_CUSTOM_CHANNEL;
 
-        let chroma_chunk_size: usize = (32 - 5) / 2;
+        let chroma_chunk_size: usize = (report_template.len() - 5) / 2;
         let chroma_chunks = (count as f32 / chroma_chunk_size as f32).ceil() as usize;
         let chroma_reports = (0..chroma_chunks).map(|i| {
             let mut chroma_report = report_template.clone();
@@ -306,7 +312,7 @@ impl Keyboard {
             return chroma_report;
         });
 
-        let brightness_chunk_size: usize = 32 - 5;
+        let brightness_chunk_size: usize = report_template.len() - 5;
         let brightness_chunks = (count as f32 / brightness_chunk_size as f32).ceil() as usize;
         let brightness_reports = (0..brightness_chunks).map(|i| {
             let mut brightness_report = report_template.clone();
@@ -340,8 +346,8 @@ impl Keyboard {
         Ok(colors)
     }
 
-    async fn load_color(device: &KeyboardDevice) -> Result<(u8, u8)> {
-        let mut report: [u8; 32] = [0; 32];
+    async fn load_color<const N: usize>(device: &KeyboardDevice<N>) -> Result<(u8, u8)> {
+        let mut report = device.create_report();
         report[0] = QMK_CUSTOM_GET_COMMAND;
         report[1] = QMK_RGB_MATRIX_CHANNEL;
         report[2] = QMK_COMMAND_COLOR;
@@ -349,8 +355,8 @@ impl Keyboard {
         Ok((response[3], response[4]))
     }
 
-    async fn load_effect(device: &KeyboardDevice) -> Result<u8> {
-        let mut report: [u8; 32] = [0; 32];
+    async fn load_effect<const N: usize>(device: &KeyboardDevice<N>) -> Result<u8> {
+        let mut report = device.create_report();
         report[0] = QMK_CUSTOM_GET_COMMAND;
         report[1] = QMK_RGB_MATRIX_CHANNEL;
         report[2] = QMK_COMMAND_EFFECT;
@@ -358,8 +364,8 @@ impl Keyboard {
         Ok(response[3])
     }
 
-    async fn load_speed(device: &KeyboardDevice) -> Result<u8> {
-        let mut report: [u8; 32] = [0; 32];
+    async fn load_speed<const N: usize>(device: &KeyboardDevice<N>) -> Result<u8> {
+        let mut report = device.create_report();
         report[0] = QMK_CUSTOM_GET_COMMAND;
         report[1] = QMK_RGB_MATRIX_CHANNEL;
         report[2] = QMK_COMMAND_SPEED;
@@ -367,8 +373,8 @@ impl Keyboard {
         Ok(response[3])
     }
 
-    async fn load_brightness(device: &KeyboardDevice) -> Result<u8> {
-        let mut report: [u8; 32] = [0; 32];
+    async fn load_brightness<const N: usize>(device: &KeyboardDevice<N>) -> Result<u8> {
+        let mut report = device.create_report();
         report[0] = QMK_CUSTOM_GET_COMMAND;
         report[1] = QMK_RGB_MATRIX_CHANNEL;
         report[2] = QMK_COMMAND_BRIGHTNESS;
@@ -376,13 +382,16 @@ impl Keyboard {
         Ok(response[3])
     }
 
-    async fn load_keymap(device: &KeyboardDevice, count: usize) -> Result<Vec<u16>> {
+    async fn load_keymap<const N: usize>(
+        device: &KeyboardDevice<N>,
+        count: usize,
+    ) -> Result<Vec<u16>> {
         let mut keymap = vec![0u16; count];
 
-        let mut report_template: [u8; 32] = [0; 32];
+        let mut report_template = device.create_report();
         report_template[0] = QMK_KEYMAP_GET_COMMAND;
 
-        let keymap_chunk_size: usize = 32 - 4;
+        let keymap_chunk_size: usize = report_template.len() - 4;
         let keymap_chunks = ((count * 2) as f32 / keymap_chunk_size as f32).ceil() as usize;
 
         let requests = (0..keymap_chunks)

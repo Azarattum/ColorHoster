@@ -1,28 +1,31 @@
 use anyhow::{Result, anyhow};
 use async_hid::{AsyncHidRead, AsyncHidWrite, DeviceWriter, HidBackend};
 use futures::{StreamExt, future::ready};
-use std::{
-    pin::Pin,
-    sync::{Arc, Mutex},
-    task::{Context, Poll, Waker},
-};
+use std::sync::Arc;
 use tokio::sync::{
     mpsc::{self, Sender},
     oneshot,
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::consts::{QMK_USAGE_ID, QMK_USAGE_PAGE};
+use crate::{
+    consts::{QMK_USAGE_ID, QMK_USAGE_PAGE},
+    report::{FutureReport, FutureReportState, Report},
+};
 
-type ReportRequest = (Vec<u8>, FutureReportState, oneshot::Sender<()>);
+type ReportRequest<const N: usize> = (Vec<u8>, FutureReportState<N>, oneshot::Sender<()>);
 
-pub struct KeyboardDevice {
+pub struct KeyboardDevice<const N: usize> {
     writer: Arc<tokio::sync::Mutex<DeviceWriter>>,
     listener: CancellationToken,
-    reporter: Sender<ReportRequest>,
+    reporter: Sender<ReportRequest<N>>,
 }
 
-impl KeyboardDevice {
+impl<const N: usize> KeyboardDevice<N> {
+    pub fn create_report(&self) -> Report<N> {
+        Report::<N>::new()
+    }
+
     pub async fn from_ids(vendor_id: u16, product_id: u16) -> Result<Self> {
         let (mut reader, writer) = HidBackend::default()
             .enumerate()
@@ -43,13 +46,13 @@ impl KeyboardDevice {
         let listener = CancellationToken::new();
         let signal = listener.clone();
 
-        let (reporter, mut receiver) = mpsc::channel::<ReportRequest>(32);
+        let (reporter, mut receiver) = mpsc::channel::<ReportRequest<N>>(32);
 
         tokio::spawn(async move {
-            let mut requests: Vec<(Vec<u8>, FutureReportState)> = Vec::new();
+            let mut requests: Vec<(Vec<u8>, FutureReportState<N>)> = Vec::new();
 
             loop {
-                let mut buffer = [0u8; 32];
+                let mut buffer = [0u8; N];
                 tokio::select! {
                     _ = signal.cancelled() => { return; }
 
@@ -83,64 +86,32 @@ impl KeyboardDevice {
         })
     }
 
-    pub async fn send_report(&self, report: [u8; 32]) -> Result<()> {
-        let mut report_with_id = [0u8; 33];
-        report_with_id[1..33].copy_from_slice(&report);
-
+    pub async fn send_report(&self, report: Report<N>) -> Result<()> {
         self.writer
             .lock()
             .await
-            .write_output_report(&report_with_id)
+            .write_output_report(&report.into_inner())
             .await
             .map_err(|err| anyhow::Error::from(err))?;
 
         Ok(())
     }
 
-    pub async fn request_report(&self, report: [u8; 32], ref_bytes: usize) -> Result<[u8; 32]> {
+    pub async fn request_report(&self, report: Report<N>, ref_bytes: usize) -> Result<[u8; N]> {
         let prefix = report[..ref_bytes].to_vec();
-        let state = Arc::new(std::sync::Mutex::new(ReportFutureInner {
-            data: None,
-            waker: None,
-        }));
+        let state = FutureReport::new_state();
 
         let (ack_tx, ack_rx) = oneshot::channel();
         self.reporter.send((prefix, state.clone(), ack_tx)).await?;
         ack_rx.await?;
 
         self.send_report(report).await?;
-        Ok(FutureReport { state }.await)
+        Ok(FutureReport::from_state(state).await)
     }
 }
 
-impl Drop for KeyboardDevice {
+impl<const N: usize> Drop for KeyboardDevice<N> {
     fn drop(&mut self) {
         self.listener.cancel();
-    }
-}
-
-struct ReportFutureInner {
-    data: Option<[u8; 32]>,
-    waker: Option<Waker>,
-}
-
-type FutureReportState = Arc<Mutex<ReportFutureInner>>;
-
-struct FutureReport {
-    state: FutureReportState,
-}
-
-impl Future for FutureReport {
-    type Output = [u8; 32];
-
-    fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut state = self.state.lock().unwrap();
-
-        if let Some(data) = state.data.take() {
-            Poll::Ready(data)
-        } else {
-            state.waker = Some(ctx.waker().clone());
-            Poll::Pending
-        }
     }
 }
