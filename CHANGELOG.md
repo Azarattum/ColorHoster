@@ -1,3 +1,8 @@
+## 0.5.0
+
+- `colorhoster.toml` config file can now override the program defaults
+- `--service create` now saves any extra options to `colorhoster.toml`
+
 ## 0.4.0
 
 - Support for hot-plugging keyboards without restarting the app
