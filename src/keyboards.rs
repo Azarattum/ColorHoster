@@ -1,5 +1,5 @@
 use anyhow::Result;
-use async_hid::{DeviceEvent, DeviceId, HidBackend};
+use async_hid::{Device, DeviceEvent, DeviceId, HidBackend};
 use colored::Colorize;
 use futures::StreamExt;
 use indexmap::IndexMap;
@@ -34,15 +34,14 @@ impl Keyboards {
         let mut stream = backend.enumerate().await?;
 
         while let Some(device) = stream.next().await {
-            if device.usage_id == QMK_USAGE_ID && device.usage_page == QMK_USAGE_PAGE {
-                if let Some(config) = configs.remove(&(device.vendor_id, device.product_id)) {
-                    debug!("Keyboard {} connected!", config.name.bold());
-                    match Keyboard::from_config(config, device).await {
-                        Err(error) => warn!("Failed to initialize keyboard: {error}"),
-                        Ok(keyboard) => {
-                            keyboards
-                                .insert(keyboard.device_id().clone(), AsyncMutex::new(keyboard));
-                        }
+            if is_compatible(&device)
+                && let Some(config) = configs.remove(&(device.vendor_id, device.product_id))
+            {
+                debug!("Keyboard {} connected!", config.name.bold());
+                match Keyboard::from_config(config, device).await {
+                    Err(error) => warn!("Failed to initialize keyboard: {error}"),
+                    Ok(keyboard) => {
+                        keyboards.insert(keyboard.device_id().clone(), AsyncMutex::new(keyboard));
                     }
                 }
             }
@@ -69,7 +68,7 @@ impl Keyboards {
                     match event {
                         DeviceEvent::Connected(id) => {
                             let devices = backend.query_devices(&id).await.ok();
-                            let device = devices.and_then(|mut x| x.next());
+                            let device = devices.and_then(|x| x.filter(is_compatible).next());
                             let config = device.as_ref().and_then(|device| {
                                 let key = &(device.vendor_id, device.product_id);
                                 configs.lock().unwrap().remove(key)
@@ -118,4 +117,8 @@ impl Keyboards {
     pub async fn items(&self) -> MutexGuard<'_, IndexMap<DeviceId, AsyncMutex<Keyboard>>> {
         self.keyboards.lock().await
     }
+}
+
+fn is_compatible(device: &Device) -> bool {
+    device.usage_id == QMK_USAGE_ID && device.usage_page == QMK_USAGE_PAGE
 }
