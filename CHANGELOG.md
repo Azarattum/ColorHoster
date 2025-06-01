@@ -1,3 +1,8 @@
+## 0.4.0
+
+- Support for hot-plugging keyboards without restarting the app
+- Improved communication reliability
+
 ## 0.3.2
 
 - Fixed loading keymap layout on some keyboards (tested with Keychron Q6 HE)
