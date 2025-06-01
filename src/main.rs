@@ -6,6 +6,7 @@ mod consts;
 mod device;
 mod handlers;
 mod keyboard;
+mod keyboards;
 mod report;
 mod utils;
 
@@ -14,23 +15,24 @@ use ceviche::controller::*;
 use ceviche::{Service, ServiceEvent};
 use clap::{Parser, ValueEnum};
 use colored::Colorize;
+use config::Config;
+use consts::Request;
 use futures::future;
 use handlers::{HandlerContext, handle};
 use itertools::Itertools;
+use keyboards::Keyboards;
 use log::{debug, error, info, warn};
+use std::collections::HashMap;
 use std::env;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::{fs, path::PathBuf, sync::Arc};
+use std::{fs, path::PathBuf};
 use tokio::runtime::Runtime;
 use tokio::{
     io::AsyncReadExt,
     net::{TcpListener, TcpStream},
-    sync::Mutex,
 };
 use tokio_util::sync::CancellationToken;
-
-use keyboard::Keyboard;
-use utils::ErrorExt;
+use utils::{ErrorExt, StreamExt};
 
 /// Color Hoster is OpenRGB compatible high-performance SDK server for VIA per-key RGB
 #[derive(Parser, Debug)]
@@ -171,9 +173,9 @@ async fn run(args: CLI, interrupt: CancellationToken) -> Result<()> {
         };
 
         let mut ctx = HandlerContext {
+            client: None,
             keyboards: keyboards.clone(),
             interrupt: interrupt.clone(),
-            client: "Unknown".to_string(),
             with_brightness: args.brightness,
             profiles_dir: profiles_dir.clone(),
         };
@@ -181,11 +183,14 @@ async fn run(args: CLI, interrupt: CancellationToken) -> Result<()> {
         tokio::spawn(async move {
             match handle_connection(stream, &mut ctx).await {
                 Err(error) if error.is_disconnect() => {
-                    debug!("Client {} disconnected.", ctx.client.bold())
+                    debug!(
+                        "Client {} disconnected.",
+                        ctx.client.unwrap_or("Unknown".to_string()).bold()
+                    )
                 }
                 Err(error) => warn!(
                     "{}\x1B[33m disconnected due to an error: {error}",
-                    ctx.client.bold()
+                    ctx.client.unwrap_or("Unknown".to_string()).bold()
                 ),
                 Ok(()) => (),
             }
@@ -194,10 +199,16 @@ async fn run(args: CLI, interrupt: CancellationToken) -> Result<()> {
 }
 
 async fn handle_connection(mut stream: TcpStream, ctx: &mut HandlerContext) -> Result<()> {
+    let mut device_notification = ctx.keyboards.subscribe();
+
     loop {
         let magic = tokio::select! {
             data = stream.read_u32_le() => data?,
             _ = ctx.interrupt.cancelled() => return Ok(()),
+            _ = device_notification.recv() => {
+                stream.write_response(Request::DeviceListUpdated.into(), &[]).await?;
+                continue;
+            }
         };
         if magic != 1111970383 {
             return Err(anyhow!("Invalid packet header!"));
@@ -210,11 +221,8 @@ async fn handle_connection(mut stream: TcpStream, ctx: &mut HandlerContext) -> R
     }
 }
 
-async fn load_keyboards(
-    directory: Option<PathBuf>,
-    json: Vec<PathBuf>,
-) -> Result<Arc<Vec<Mutex<Keyboard>>>> {
-    let handles: Vec<_> = directory
+async fn load_keyboards(directory: Option<PathBuf>, json: Vec<PathBuf>) -> Result<Keyboards> {
+    let configs = directory
         .unwrap_or(current_dir())
         .read_dir()?
         .filter_map(|path| {
@@ -228,25 +236,22 @@ async fn load_keyboards(
         .chain(json.into_iter())
         .filter_map(|x| fs::read_to_string(x).ok())
         .unique()
-        .map(|x| Keyboard::from_str(x))
-        .collect();
+        .map(|x| Config::from_str(&x).map(|config| ((config.vendor_id, config.product_id), config)))
+        .collect::<Result<HashMap<_, _>>>()?;
 
-    if handles.is_empty() {
+    if configs.is_empty() {
         return Err(anyhow!("No keyboard `.json` files found!"));
     }
 
-    let keyboards = future::try_join_all(handles).await?;
-
-    debug!("Connected keyboards: {}", keyboards.join(", "));
-    Ok(Arc::new(keyboards.into_iter().map(Mutex::new).collect()))
+    let keyboards = Keyboards::from_configs(configs).await?;
+    keyboards.watch()?;
+    Ok(keyboards)
 }
 
-async fn reset_brightness(
-    keyboards: &Arc<Vec<Mutex<Keyboard>>>,
-    with_brightness: bool,
-) -> Result<()> {
+async fn reset_brightness(keyboards: &Keyboards, with_brightness: bool) -> Result<()> {
     if !with_brightness {
-        let handles = keyboards.iter().map(|keyboard| async {
+        let keyboards = keyboards.items().await;
+        let handles = keyboards.values().map(|keyboard| async {
             let mut keyboard = keyboard.lock().await;
             keyboard.reset_brightness().await
         });

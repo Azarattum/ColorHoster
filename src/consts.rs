@@ -1,6 +1,6 @@
-use num_enum::TryFromPrimitive;
+use num_enum::{IntoPrimitive, TryFromPrimitive};
 
-#[derive(PartialEq, Debug, TryFromPrimitive)]
+#[derive(PartialEq, Debug, TryFromPrimitive, IntoPrimitive)]
 #[repr(u32)]
 pub enum Request {
     GetControllerCount = 0,

@@ -2,8 +2,8 @@ use anyhow::{Result, anyhow};
 use colored::Colorize;
 use log::debug;
 use palette::{encoding::Srgb, rgb::Rgb};
-use std::{path::PathBuf, sync::Arc};
-use tokio::{io::AsyncReadExt, net::TcpStream, sync::Mutex};
+use std::path::PathBuf;
+use tokio::{io::AsyncReadExt, net::TcpStream};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -12,13 +12,13 @@ use crate::{
         MODE_FLAG_HAS_RANDOM_COLOR, OPENRGB_PROTOCOL_VERSION, Request, ZONE_TYPE_MATRIX,
         openrgb_keycode,
     },
-    keyboard::Keyboard,
+    keyboards::Keyboards,
     utils::{BufferExt, StreamExt},
 };
 
 pub struct HandlerContext {
-    pub keyboards: Arc<Vec<Mutex<Keyboard>>>,
-    pub client: String,
+    pub keyboards: Keyboards,
+    pub client: Option<String>,
     pub with_brightness: bool,
     pub profiles_dir: PathBuf,
     pub interrupt: CancellationToken,
@@ -31,18 +31,42 @@ pub async fn handle(
     ctx: &mut HandlerContext,
 ) -> Result<()> {
     let length = stream.read_u32_le().await?;
-    let mut keyboard = ctx
-        .keyboards
-        .get(device as usize)
+    let keyboards = ctx.keyboards.items().await;
+
+    match Request::try_from(request).ok() {
+        Some(Request::GetProtocolVersion) => {
+            let _client_version = stream.read_u32_le().await?;
+            let version = OPENRGB_PROTOCOL_VERSION.to_le_bytes();
+            stream.write_response(request, &version).await?;
+            return Ok(());
+        }
+        Some(Request::GetControllerCount) => {
+            let count: u32 = keyboards.len() as u32;
+            stream.write_response(request, &count.to_le_bytes()).await?;
+            return Ok(());
+        }
+        Some(Request::SetClientName) => {
+            let mut name: Vec<u8> = vec![0; length as usize];
+            stream.read_exact(&mut name).await?;
+
+            let first_time = ctx.client.is_none();
+            ctx.client = Some(String::from_utf8_lossy(&name).to_string());
+            if first_time {
+                debug!("Client {} connected.", ctx.client.clone().unwrap().bold());
+            }
+            return Ok(());
+        }
+        _ => {}
+    }
+
+    let mut keyboard = keyboards
+        .values()
+        .nth(device as usize)
         .ok_or(anyhow!("Unknown device!"))?
         .lock()
         .await;
 
     match Request::try_from(request).ok() {
-        Some(Request::GetControllerCount) => {
-            let count: u32 = ctx.keyboards.len() as u32;
-            stream.write_response(request, &count.to_le_bytes()).await?;
-        }
         Some(Request::GetControllerData) => {
             if length > 0 {
                 stream.read_u32_le().await?;
@@ -136,17 +160,6 @@ pub async fn handle(
             buffer[0..4].copy_from_slice(&buffer_length.to_le_bytes());
 
             stream.write_response(request, &buffer).await?;
-        }
-        Some(Request::GetProtocolVersion) => {
-            let _client_version = stream.read_u32_le().await?;
-            let version = OPENRGB_PROTOCOL_VERSION.to_le_bytes();
-            stream.write_response(request, &version).await?;
-        }
-        Some(Request::SetClientName) => {
-            let mut name: Vec<u8> = vec![0; length as usize];
-            stream.read_exact(&mut name).await?;
-            ctx.client = String::from_utf8_lossy(&name).to_string();
-            debug!("Client {} connected.", ctx.client.bold());
         }
         Some(Request::UpdateSingleLed) => {
             let led_index = stream.read_u32_le().await? as usize;

@@ -1,4 +1,5 @@
 use anyhow::{Result, anyhow};
+use async_hid::{Device, DeviceId};
 use futures::future::{self};
 use palette::{Hsv, IntoColor, encoding::Srgb, rgb::Rgb};
 use serde::{Deserialize, Serialize};
@@ -33,13 +34,8 @@ struct KeyboardState {
 }
 
 impl Keyboard {
-    pub async fn from_str(json_str: String) -> Result<Keyboard> {
-        let config: Config = Config::from_str(&json_str)?;
-        return Keyboard::from_config(config).await;
-    }
-
-    pub async fn from_config(config: Config) -> Result<Keyboard> {
-        let device = KeyboardDevice::from_ids(config.vendor_id, config.product_id).await?;
+    pub async fn from_config(config: Config, device: Device) -> Result<Keyboard> {
+        let device = KeyboardDevice::from_device(device).await?;
         let leds = config.count_leds() as usize;
 
         let (keymap, colors, color, effect, speed, brightness) = tokio::try_join!(
@@ -290,6 +286,14 @@ impl Keyboard {
         report[1] = QMK_RGB_MATRIX_CHANNEL;
         self.device.send_report(report).await?;
         Ok(())
+    }
+
+    pub fn device_id(&self) -> &DeviceId {
+        &self.device.id
+    }
+
+    pub fn into_config(self) -> Config {
+        self.config
     }
 
     async fn load_colors<const N: usize>(

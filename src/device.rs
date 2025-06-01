@@ -1,24 +1,22 @@
-use anyhow::{Result, anyhow};
-use async_hid::{AsyncHidRead, AsyncHidWrite, DeviceWriter, HidBackend};
-use futures::{StreamExt, future::ready};
+use anyhow::Result;
+use async_hid::{AsyncHidRead, AsyncHidWrite, Device, DeviceId, DeviceWriter};
 use std::sync::Arc;
 use tokio::sync::{
+    Mutex as AsyncMutex,
     mpsc::{self, Sender},
     oneshot,
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{
-    consts::{QMK_USAGE_ID, QMK_USAGE_PAGE},
-    report::{FutureReport, FutureReportState, Report},
-};
+use crate::report::{FutureReport, FutureReportState, Report};
 
 type ReportRequest<const N: usize> = (Vec<u8>, FutureReportState<N>, oneshot::Sender<()>);
 
 pub struct KeyboardDevice<const N: usize> {
-    writer: Arc<tokio::sync::Mutex<DeviceWriter>>,
+    writer: Arc<AsyncMutex<DeviceWriter>>,
     listener: CancellationToken,
     reporter: Sender<ReportRequest<N>>,
+    pub id: DeviceId,
 }
 
 impl<const N: usize> KeyboardDevice<N> {
@@ -26,22 +24,8 @@ impl<const N: usize> KeyboardDevice<N> {
         Report::<N>::new()
     }
 
-    pub async fn from_ids(vendor_id: u16, product_id: u16) -> Result<Self> {
-        let (mut reader, writer) = HidBackend::default()
-            .enumerate()
-            .await?
-            .filter(|info| ready(info.matches(QMK_USAGE_PAGE, QMK_USAGE_ID, vendor_id, product_id)))
-            .next()
-            .await
-            .ok_or_else(|| {
-                anyhow!(
-                    "A device cannot be detected (VID: {}, PID: {})!",
-                    vendor_id,
-                    product_id
-                )
-            })?
-            .open()
-            .await?;
+    pub async fn from_device(device: Device) -> Result<Self> {
+        let (mut reader, writer) = device.open().await?;
 
         let listener = CancellationToken::new();
         let signal = listener.clone();
@@ -81,6 +65,7 @@ impl<const N: usize> KeyboardDevice<N> {
 
         Ok(KeyboardDevice {
             writer: Arc::new(tokio::sync::Mutex::new(writer)),
+            id: device.id.clone(),
             reporter,
             listener,
         })

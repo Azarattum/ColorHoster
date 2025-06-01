@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.97"
-async-hid = "0.4.0"
+async-hid = "0.4.1"
 ceviche = "0.6.1"
 chrono = "0.4.40"
 clap = { version = "4.5.32", features = ["derive"] }
@@ -14,6 +14,7 @@ ctrlc = "3.4.5"
 evalexpr = "12.0.2"
 fern = { version = "0.7.1", features = ["colored"] }
 futures = "0.3.31"
+indexmap = "2.9.0"
 itertools = "0.14.0"
 log = "0.4.26"
 num_enum = "0.7.3"
