@@ -1,3 +1,7 @@
+## 0.5.1
+
+- Fixed HID issues on Windows
+
 ## 0.5.0
 
 - `colorhoster.toml` config file can now override the program defaults
