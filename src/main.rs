@@ -1,6 +1,7 @@
 #![feature(let_chains)]
 
 mod chunks;
+mod cli;
 mod config;
 mod consts;
 mod device;
@@ -13,66 +14,28 @@ mod utils;
 use anyhow::{Result, anyhow};
 use ceviche::controller::*;
 use ceviche::{Service, ServiceEvent};
-use clap::{Parser, ValueEnum};
 use colored::Colorize;
-use config::Config;
-use consts::Request;
 use futures::future;
-use handlers::{HandlerContext, handle};
 use itertools::Itertools;
-use keyboards::Keyboards;
 use log::{debug, error, info, warn};
 use std::collections::HashMap;
 use std::env;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::{fs, path::PathBuf};
 use tokio::runtime::Runtime;
 use tokio::{
     io::AsyncReadExt,
     net::{TcpListener, TcpStream},
 };
 use tokio_util::sync::CancellationToken;
+
+use cli::{CLI, ServiceAction};
+use config::Config;
+use consts::Request;
+use handlers::{HandlerContext, handle};
+use keyboards::Keyboards;
 use utils::{ErrorExt, StreamExt};
-
-/// Color Hoster is OpenRGB compatible high-performance SDK server for VIA per-key RGB
-#[derive(Parser, Debug)]
-#[command(
-    version,
-    after_help = format!("{} ./ColorHoster -b -j ./p1_he_ansi_v1.0.json", "Example:".bold())
-)]
-struct CLI {
-    /// Set a directory to look for VIA `.json` definitions for keyboards [default: <executable directory>]
-    #[arg(short, long)]
-    directory: Option<PathBuf>,
-
-    /// Add a direct path to a VIA `.json` file (can be multiple)
-    #[arg(short, long)]
-    json: Vec<std::path::PathBuf>,
-
-    /// Allow direct mode to change brightness values
-    #[arg(short, long)]
-    brightness: bool,
-
-    /// Set a directory for storing and loading profiles [default: ./profiles]
-    #[arg(long)]
-    profiles: Option<PathBuf>,
-
-    /// Set the port to listen on
-    #[arg(short, long, default_value_t = 6742)]
-    port: u32,
-
-    /// Manage Color Hoster service
-    #[arg(short, long)]
-    service: Option<ServiceAction>,
-}
-
-#[derive(Clone, Debug, ValueEnum)]
-enum ServiceAction {
-    Create,
-    Delete,
-    Start,
-    Stop,
-}
 
 fn main() {
     let mut controller = Controller::new(
@@ -81,7 +44,18 @@ fn main() {
         "OpenRGB compatible high-performance SDK server for VIA per-key RGB.",
     );
 
-    let result: Result<()> = match CLI::parse().service {
+    let args = CLI::parse_args(env::args());
+
+    if let Some(ServiceAction::Create) = args.service {
+        utils::setup_logger();
+        match args.save_to_config() {
+            Err(error) => error!("Failed to write service config: {error}"),
+            Ok(true) => debug!("Service config created: {:?}", CLI::config_path()),
+            _ => {}
+        }
+    }
+
+    let result: Result<()> = match args.service {
         Some(ServiceAction::Create) => controller.create().map_err(|x| x.into()),
         Some(ServiceAction::Delete) => controller.delete().map_err(|x| x.into()),
         Some(ServiceAction::Start) => controller.start().map_err(|x| x.into()),
@@ -116,7 +90,7 @@ fn service_main(
     _standalone_mode: bool,
 ) -> u32 {
     utils::setup_logger();
-    let args = CLI::parse_from(args);
+    let args = CLI::parse_args(args);
     let interrupt = CancellationToken::new();
     let runtime = Runtime::new().expect("Failed to create async runtime!");
 
@@ -157,7 +131,7 @@ async fn run(args: CLI, interrupt: CancellationToken) -> Result<()> {
 
     let profiles_dir = args
         .profiles
-        .unwrap_or_else(|| current_dir().join(PathBuf::from("./profiles")));
+        .unwrap_or_else(|| CLI::current_dir().join(PathBuf::from("./profiles")));
 
     tokio::fs::create_dir_all(&profiles_dir).await?;
 
@@ -223,7 +197,7 @@ async fn handle_connection(mut stream: TcpStream, ctx: &mut HandlerContext) -> R
 
 async fn load_keyboards(directory: Option<PathBuf>, json: Vec<PathBuf>) -> Result<Keyboards> {
     let configs = directory
-        .unwrap_or(current_dir())
+        .unwrap_or(CLI::current_dir())
         .read_dir()?
         .filter_map(|path| {
             let path = path.as_ref().ok()?.path();
@@ -260,12 +234,4 @@ async fn reset_brightness(keyboards: &Keyboards, with_brightness: bool) -> Resul
     }
 
     Ok(())
-}
-
-fn current_dir() -> PathBuf {
-    std::env::current_exe()
-        .expect("Failed to get current executable path!")
-        .parent()
-        .expect("Failed to get parent directory of current executable!")
-        .to_path_buf()
 }

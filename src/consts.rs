@@ -52,6 +52,8 @@ pub const MODE_FLAG_MANUAL_SAVE: u32 = 1 << 8;
 
 pub const ZONE_TYPE_MATRIX: i32 = 2;
 
+pub const OPENRGB_SDK_DEFAULT_PORT: u32 = 6742;
+
 pub fn openrgb_keycode(keycode: u16) -> &'static str {
     match keycode {
         1 => "Right Fn",

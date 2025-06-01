@@ -18,11 +18,12 @@
 Usage: ColorHoster [OPTIONS]
 
 Options:
-  -d, --directory <DIRECTORY>  Set a directory to look for VIA `.json` definitions for keyboards [default: ./]
+  -d, --directory <DIRECTORY>  Set a directory to look for VIA `.json` definitions for keyboards [default: <executable directory>]
   -j, --json <JSON>            Add a direct path to a VIA `.json` file (can be multiple)
   -b, --brightness             Allow direct mode to change brightness values
       --profiles <PROFILES>    Set a directory for storing and loading profiles [default: ./profiles]
   -p, --port <PORT>            Set the port to listen on [default: 6742]
+  -s, --service <SERVICE>      Manage Color Hoster service [possible values: create, delete, start, stop]
   -h, --help                   Print help
   -V, --version                Print version
 
@@ -61,6 +62,10 @@ ColorHoster should be compatible with any OpenRGB v3 protocol client, enabling R
    - Keyboard LED layout
    - Available lighting modes
    - Real-time control capabilities
+
+## Service Management (`--service` option)
+
+ColorHoster can run as a background service on any OS using the `--service` option: `create`, `start`, `stop`, or `delete`. When you run `--service create` with any CLI options, those options are saved to a `colorhoster.toml` config file next to the executable and will become the default options for both service and CLI usage (unless overridden).
 
 ## Technical Details
 
