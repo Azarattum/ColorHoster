@@ -40,6 +40,8 @@ Download [the latest release](https://github.com/Azarattum/ColorHoster/releases)
 
 For my personal setup you can take a look at my [QMK fork for Lemokey P1 HE](https://github.com/Azarattum/QMK) with ColorHoster support and other cool features (the repo also has [my VIA JSON config](https://github.com/Azarattum/QMK/blob/hall_effect_custom/keyboards/lemokey/p1_he/via_json/p1_he_ansi_v1.0.json)). For ColorHoster implementation there refer to [this commit](https://github.com/Azarattum/QMK/commit/b80ff1fdd85fe8d2eb7c604f02568b8adf5f949f).
 
+If you have any issues patching VIA RGB support into your firmware or creating a VIA JSON config for your keyboard, ask around in [OpenRGB Community Discord](https://discord.gg/uGTkaKkR) (`qmk-firmware-hacking` channel is a good place to start).
+
 ### Running
 ```bash
 ./ColorHoster --brightness --json ./path/to/your_keyboard.json
