@@ -1,5 +1,6 @@
 use anyhow::{Result, anyhow};
 use colored::Colorize;
+use itertools::Itertools;
 use log::debug;
 use palette::{encoding::Srgb, rgb::Rgb};
 use std::path::PathBuf;
@@ -143,7 +144,7 @@ pub async fn handle(
 
             buffer.extend_from_slice(&(leds_count as u16).to_le_bytes());
             let keymap = keyboard.keymap();
-            for item in config.leds.iter() {
+            for item in config.leds.iter().sorted() {
                 if let &Some((led, (row, col))) = item {
                     let scancode = keymap[row as usize * config.matrix.0 as usize + col as usize];
                     buffer.extend_from_str(&format!("Key: {}", openrgb_keycode(scancode)));
