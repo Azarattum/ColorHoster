@@ -2,6 +2,7 @@ use anyhow::Result;
 use evalexpr::{
     ContextWithMutableVariables, HashMapContext, Node, Value as EvalValue, build_operator_tree,
 };
+use itertools::Itertools;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -63,6 +64,7 @@ impl Config {
                 }
             })
             .map(extract_led)
+            .sorted()
             .collect()
     }
 
