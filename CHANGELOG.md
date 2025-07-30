@@ -1,3 +1,7 @@
+## 0.5.2
+
+- Fixed led ordering on some keyboards (see #4). Thanks, @DEREFERENC3D
+
 ## 0.5.1
 
 - Fixed HID issues on Windows
