@@ -2,6 +2,7 @@ use anyhow::Result;
 use evalexpr::{
     ContextWithMutableVariables, HashMapContext, Node, Value as EvalValue, build_operator_tree,
 };
+use itertools::Itertools;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -19,7 +20,7 @@ pub struct Config {
     pub name: String,
     pub vendor_id: u16,
     pub product_id: u16,
-    pub leds: Vec<Option<(u8, Position)>>,
+    pub leds: Vec<(u8, Position)>,
     pub effects: Vec<Effect>,
     pub speed: Range,
     pub brightness: Range,
@@ -51,7 +52,7 @@ impl Config {
         })
     }
 
-    fn parse_leds(keymap: &[Vec<KeymapEntry>]) -> Vec<Option<(u8, Position)>> {
+    fn parse_leds(keymap: &[Vec<KeymapEntry>]) -> Vec<(u8, Position)> {
         keymap
             .iter()
             .flatten()
@@ -62,7 +63,8 @@ impl Config {
                     None
                 }
             })
-            .map(extract_led)
+            .filter_map(extract_led)
+            .sorted()
             .collect()
     }
 
@@ -154,7 +156,7 @@ impl Config {
     }
 
     pub fn count_leds(&self) -> u32 {
-        let index = self.leds.iter().max().unwrap_or(&None);
+        let index = self.leds.iter().max();
         if let Some(index) = index {
             return index.0 as u32 + 1;
         } else {
