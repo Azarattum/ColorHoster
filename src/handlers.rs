@@ -136,19 +136,17 @@ pub async fn handle(
             buffer.extend_from_slice(&config.matrix.0.to_le_bytes());
 
             let mut led_matrix = vec![0xFFFFFFFF; (config.matrix.0 * config.matrix.1) as usize];
-            for (led, (row, col)) in config.leds.iter().filter_map(|led| *led) {
+            for &(led, (row, col)) in config.leds.iter() {
                 led_matrix[row as usize * config.matrix.0 as usize + col as usize] = led as u32;
             }
             buffer.extend_from_u32s(&led_matrix);
 
             buffer.extend_from_slice(&(leds_count as u16).to_le_bytes());
             let keymap = keyboard.keymap();
-            for item in config.leds.iter() {
-                if let &Some((led, (row, col))) = item {
-                    let scancode = keymap[row as usize * config.matrix.0 as usize + col as usize];
-                    buffer.extend_from_str(&format!("Key: {}", openrgb_keycode(scancode)));
-                    buffer.extend_from_slice(&(led as u32).to_le_bytes());
-                }
+            for &(led, (row, col)) in config.leds.iter() {
+                let scancode = keymap[row as usize * config.matrix.0 as usize + col as usize];
+                buffer.extend_from_str(&format!("Key: {}", openrgb_keycode(scancode)));
+                buffer.extend_from_slice(&(led as u32).to_le_bytes());
             }
 
             buffer.extend_from_slice(&(leds_count as u16).to_le_bytes());
