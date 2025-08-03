@@ -3,10 +3,9 @@ use async_hid::{Device, DeviceId};
 use futures::future::{self};
 use palette::{Hsv, IntoColor, encoding::Srgb, rgb::Rgb};
 use serde::{Deserialize, Serialize};
-use std::borrow::Borrow;
+use std::{borrow::Borrow, fmt};
 
 use crate::{
-    chunks::ChunkChanged,
     config::Config,
     consts::{
         QMK_COMMAND_BRIGHTNESS, QMK_COMMAND_COLOR, QMK_COMMAND_EFFECT,
@@ -14,17 +13,18 @@ use crate::{
         QMK_CUSTOM_CHANNEL, QMK_CUSTOM_GET_COMMAND, QMK_CUSTOM_SAVE_COMMAND,
         QMK_CUSTOM_SET_COMMAND, QMK_KEYMAP_GET_COMMAND, QMK_RGB_MATRIX_CHANNEL,
     },
-    device::KeyboardDevice,
+    keyboard::chunks::ChunkChanged,
+    keyboard::device::KeyboardDevice,
 };
 
-pub struct Keyboard {
+pub struct KeyboardController {
     config: Config,
     keymap: Vec<u16>,
     device: KeyboardDevice<33>, // TODO: make this configurable
     state: KeyboardState,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 struct KeyboardState {
     colors: (Vec<(u8, u8)>, Vec<u8>),
     color: (u8, u8),
@@ -33,21 +33,21 @@ struct KeyboardState {
     speed: u8,
 }
 
-impl Keyboard {
-    pub async fn from_config(config: Config, device: Device) -> Result<Keyboard> {
+impl KeyboardController {
+    pub async fn from_config(config: Config, device: Device) -> Result<KeyboardController> {
         let device = KeyboardDevice::from_device(device).await?;
         let leds = config.count_leds() as usize;
 
         let (keymap, colors, color, effect, speed, brightness) = tokio::try_join!(
-            Keyboard::load_keymap(&device, (config.matrix.0 * config.matrix.1) as usize),
-            Keyboard::load_colors(&device, leds),
-            Keyboard::load_color(&device),
-            Keyboard::load_effect(&device),
-            Keyboard::load_speed(&device),
-            Keyboard::load_brightness(&device),
+            KeyboardController::load_keymap(&device, (config.matrix.0 * config.matrix.1) as usize),
+            KeyboardController::load_colors(&device, leds),
+            KeyboardController::load_color(&device),
+            KeyboardController::load_effect(&device),
+            KeyboardController::load_speed(&device),
+            KeyboardController::load_brightness(&device),
         )?;
 
-        Ok(Keyboard {
+        Ok(KeyboardController {
             config,
             keymap,
             device,
@@ -91,7 +91,7 @@ impl Keyboard {
 
     pub async fn update_colors(
         &mut self,
-        colors: Vec<Rgb>,
+        colors: Vec<Option<Rgb>>,
         offset: usize,
         with_brightness: bool,
     ) -> Result<()> {
@@ -100,8 +100,14 @@ impl Keyboard {
         }
 
         let hsv_colors = colors.into_iter().map(|rgb| {
-            let hsv: Hsv = rgb.into_color();
-            return hsv.into_format::<u8>();
+            if let Some(rgb) = rgb {
+                let hsv: Hsv = rgb.into_color();
+                return hsv.into_format::<u8>();
+            } else {
+                let (hue, saturation) = self.state.colors.0[offset];
+                let brightness = self.state.colors.1[offset];
+                return Hsv::from_components((hue, saturation, brightness));
+            }
         });
 
         let brightness: Vec<_> = hsv_colors.clone().map(|x| x.value).collect();
@@ -256,15 +262,17 @@ impl Keyboard {
 
     pub async fn load_state(&mut self, state: &str, with_brightness: bool) -> Result<()> {
         let state: KeyboardState = serde_json::from_str(state)?;
-        let colors: Vec<Rgb> = state
+        let colors: Vec<Option<Rgb>> = state
             .colors
             .0
             .iter()
             .zip(state.colors.1)
             .map(|(chroma, brightness)| {
-                return Hsv::new(chroma.0, chroma.1, brightness)
-                    .into_format::<f32>()
-                    .into_color();
+                return Some(
+                    Hsv::new(chroma.0, chroma.1, brightness)
+                        .into_format::<f32>()
+                        .into_color(),
+                );
             })
             .collect();
 
@@ -424,9 +432,19 @@ impl Keyboard {
     }
 }
 
-impl Borrow<str> for Keyboard {
+impl Borrow<str> for KeyboardController {
     fn borrow(&self) -> &str {
         &self.config.name
+    }
+}
+
+impl fmt::Debug for KeyboardController {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Keyboard")
+            .field("config", &self.config)
+            .field("keymap", &self.keymap)
+            .field("state", &self.state)
+            .finish()
     }
 }
 

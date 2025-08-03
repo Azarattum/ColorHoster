@@ -59,12 +59,10 @@ pub async fn handle(
         _ => {}
     }
 
-    let mut keyboard = keyboards
+    let keyboard = keyboards
         .values()
         .nth(device as usize)
-        .ok_or(anyhow!("Unknown device!"))?
-        .lock()
-        .await;
+        .ok_or(anyhow!("Unknown device!"))?;
 
     match Request::try_from(request).ok() {
         Some(Request::GetControllerData) => {
@@ -72,7 +70,7 @@ pub async fn handle(
                 stream.read_u32_le().await?;
             }
 
-            let config = keyboard.config();
+            let config = keyboard.config().await;
             let id = format!("{:04x}:{:04x}", config.vendor_id, config.product_id);
 
             let mut buffer = Vec::new();
@@ -87,7 +85,7 @@ pub async fn handle(
             buffer.extend_from_str(&format!("HID: {}", id));
 
             buffer.extend_from_slice(&(config.effects.len() as u16).to_le_bytes());
-            buffer.extend_from_slice(&(keyboard.effect() as i32).to_le_bytes());
+            buffer.extend_from_slice(&(keyboard.effect().await as i32).to_le_bytes());
 
             for (name, id, flags) in &config.effects {
                 buffer.extend_from_str(name);
@@ -102,8 +100,8 @@ pub async fn handle(
                 let mode_colors: u32 = 1;
                 buffer.extend_from_slice(&mode_colors.to_le_bytes());
                 buffer.extend_from_slice(&mode_colors.to_le_bytes());
-                buffer.extend_from_slice(&(keyboard.speed() as u32).to_le_bytes());
-                buffer.extend_from_slice(&(keyboard.brightness() as u32).to_le_bytes());
+                buffer.extend_from_slice(&(keyboard.speed().await as u32).to_le_bytes());
+                buffer.extend_from_slice(&(keyboard.brightness().await as u32).to_le_bytes());
                 buffer.extend_from_slice(&(0u32).to_le_bytes()); // Direction is constant
 
                 let color_mode = if flags & MODE_FLAG_HAS_PER_LED_COLOR != 0 {
@@ -118,7 +116,7 @@ pub async fn handle(
                 buffer.extend_from_slice(&color_mode.to_le_bytes());
 
                 buffer.extend_from_slice(&(mode_colors as u16).to_le_bytes());
-                buffer.extend_from_color(&keyboard.color());
+                buffer.extend_from_color(&keyboard.color().await);
             }
 
             buffer.extend_from_slice(&(1u16).to_le_bytes());
@@ -142,7 +140,7 @@ pub async fn handle(
             buffer.extend_from_u32s(&led_matrix);
 
             buffer.extend_from_slice(&(leds_count as u16).to_le_bytes());
-            let keymap = keyboard.keymap();
+            let keymap = keyboard.keymap().await;
             for &(led, (row, col)) in config.leds.iter() {
                 let scancode = keymap[row as usize * config.matrix.0 as usize + col as usize];
                 buffer.extend_from_str(&format!("Key: {}", openrgb_keycode(scancode)));
@@ -150,7 +148,7 @@ pub async fn handle(
             }
 
             buffer.extend_from_slice(&(leds_count as u16).to_le_bytes());
-            for color in keyboard.colors() {
+            for color in keyboard.colors().await {
                 buffer.extend_from_color(&color);
             }
 
@@ -163,9 +161,7 @@ pub async fn handle(
             let led_index = stream.read_u32_le().await? as usize;
             let rgb = stream.read_rgb().await?;
 
-            keyboard
-                .update_colors(vec![rgb], led_index, ctx.with_brightness)
-                .await?;
+            keyboard.update_colors(vec![Some(rgb)], led_index, ctx.with_brightness);
         }
         Some(Request::UpdateLeds) | Some(Request::UpdateZoneLeds) => {
             let _data_length = stream.read_u32_le().await?;
@@ -175,55 +171,54 @@ pub async fn handle(
             }
 
             let led_count = stream.read_u16_le().await?;
-            let mut colors: Vec<Rgb<Srgb, f32>> = Vec::new();
+            let mut colors: Vec<Option<Rgb<Srgb, f32>>> = Vec::new();
             for _ in 0..led_count {
-                colors.push(stream.read_rgb().await?);
+                colors.push(Some(stream.read_rgb().await?));
             }
 
-            keyboard
-                .update_colors(colors, 0, ctx.with_brightness)
-                .await?;
+            keyboard.update_colors(colors, 0, ctx.with_brightness);
         }
         Some(Request::UpdateMode) | Some(Request::SaveMode) => {
             let data_length = stream.read_u32_le().await?;
             let effect = stream.read_i32_le().await? as u8;
-            keyboard.update_effect(effect).await?;
+            keyboard.update_effect(effect);
 
             let name_length = stream.read_u16_le().await? as usize;
             let mut buffer = vec![0; data_length as usize - 10];
             stream.read_exact(&mut buffer).await?;
 
             let speed = buffer.read_u32_le(name_length + 32)?;
-            keyboard.update_speed(speed as u8).await?;
+            keyboard.update_speed(speed as u8);
 
             let brightness = buffer.read_u32_le(name_length + 36)?;
-            keyboard.update_brightness(brightness as u8).await?;
+            keyboard.update_brightness(brightness as u8);
 
             if buffer.read_u16_le(name_length + 48)? > 0 {
                 let color = buffer.read_rgb(name_length + 50)?;
-                keyboard.update_color(color).await?;
+                keyboard.update_color(color);
             }
 
             if request == Request::SaveMode as u32 {
-                keyboard.persist_state().await?;
+                keyboard.persist_state();
             }
         }
         Some(Request::SetCustomMode) => {
             if let Some(effect) = keyboard
                 .config()
+                .await
                 .effects
                 .iter()
                 .find(|x| x.2 & MODE_FLAG_HAS_PER_LED_COLOR != 0)
                 .map(|x| x.1 as u8)
             {
-                keyboard.update_effect(effect).await?;
+                keyboard.update_effect(effect);
             }
         }
         Some(Request::SaveProfile) => {
             let profile = stream.read_str(length as usize).await?;
             let path = ctx.profiles_dir.join(format!("{profile}.json"));
 
-            let data = keyboard.save_state()?;
+            let data = keyboard.save_state().await?;
             tokio::fs::write(&path, data).await?;
         }
         Some(Request::LoadProfile) => {
@@ -231,7 +226,7 @@ pub async fn handle(
             let path = ctx.profiles_dir.join(format!("{profile}.json"));
 
             let data = tokio::fs::read_to_string(&path).await?;
-            keyboard.load_state(&data, ctx.with_brightness).await?;
+            keyboard.load_state(data, ctx.with_brightness);
         }
         Some(Request::DeleteProfile) => {
             let profile = stream.read_str(length as usize).await?;

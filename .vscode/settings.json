@@ -1,5 +1,6 @@
 {
   "cSpell.words": [
+    "ceviche",
     "chrono",
     "colorhoster",
     "enumn",
@@ -7,6 +8,7 @@
     "Flattenable",
     "Hoster",
     "houseabsolute",
+    "indexmap",
     "itertools",
     "keymap",
     "oneshot",

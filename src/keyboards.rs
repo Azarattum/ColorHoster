@@ -21,7 +21,7 @@ use crate::{
 
 #[derive(Clone)]
 pub struct Keyboards {
-    pub keyboards: Arc<AsyncMutex<IndexMap<DeviceId, AsyncMutex<Keyboard>>>>,
+    pub keyboards: Arc<AsyncMutex<IndexMap<DeviceId, Keyboard>>>,
     configs: Arc<Mutex<HashMap<(u16, u16), Config>>>,
     sender: Sender<()>,
 }
@@ -41,7 +41,7 @@ impl Keyboards {
                 match Keyboard::from_config(config, device).await {
                     Err(error) => warn!("Failed to initialize keyboard: {error}"),
                     Ok(keyboard) => {
-                        keyboards.insert(keyboard.device_id().clone(), AsyncMutex::new(keyboard));
+                        keyboards.insert(keyboard.device_id().await, keyboard);
                     }
                 }
             }
@@ -79,10 +79,7 @@ impl Keyboards {
                                 match Keyboard::from_config(config, device).await {
                                     Err(error) => warn!("Failed to initialize keyboard: {error}"),
                                     Ok(keyboard) => {
-                                        keyboards
-                                            .lock()
-                                            .await
-                                            .insert(id, AsyncMutex::new(keyboard));
+                                        keyboards.lock().await.insert(id, keyboard);
 
                                         _ = notifier.send(());
                                     }
@@ -91,7 +88,7 @@ impl Keyboards {
                         }
                         DeviceEvent::Disconnected(id) => {
                             if let Some(device) = keyboards.lock().await.shift_remove(&id) {
-                                let config = device.into_inner().into_config();
+                                let config = device.into_config().await;
                                 debug!("Keyboard {} disconnected!", config.name.bold());
 
                                 configs
@@ -114,7 +111,7 @@ impl Keyboards {
         self.sender.subscribe()
     }
 
-    pub async fn items(&self) -> MutexGuard<'_, IndexMap<DeviceId, AsyncMutex<Keyboard>>> {
+    pub async fn items(&self) -> MutexGuard<'_, IndexMap<DeviceId, Keyboard>> {
         self.keyboards.lock().await
     }
 }

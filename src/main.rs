@@ -1,10 +1,6 @@
-#![feature(let_chains)]
-
-mod chunks;
 mod cli;
 mod config;
 mod consts;
-mod device;
 mod handlers;
 mod keyboard;
 mod keyboards;
@@ -15,7 +11,6 @@ use anyhow::{Result, anyhow};
 use ceviche::controller::*;
 use ceviche::{Service, ServiceEvent};
 use colored::Colorize;
-use futures::future;
 use itertools::Itertools;
 use log::{debug, error, info, warn};
 use std::collections::HashMap;
@@ -225,12 +220,9 @@ async fn load_keyboards(directory: Option<PathBuf>, json: Vec<PathBuf>) -> Resul
 async fn reset_brightness(keyboards: &Keyboards, with_brightness: bool) -> Result<()> {
     if !with_brightness {
         let keyboards = keyboards.items().await;
-        let handles = keyboards.values().map(|keyboard| async {
-            let mut keyboard = keyboard.lock().await;
-            keyboard.reset_brightness().await
-        });
-
-        future::try_join_all(handles).await?;
+        for keyboard in keyboards.values() {
+            keyboard.reset_brightness();
+        }
     }
 
     Ok(())

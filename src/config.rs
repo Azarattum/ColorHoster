@@ -15,7 +15,7 @@ type Position = (u8, u8);
 type Range = (u32, u32);
 type Effect = (String, i32, u32);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Config {
     pub name: String,
     pub vendor_id: u16,
