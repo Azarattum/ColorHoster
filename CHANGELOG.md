@@ -1,3 +1,7 @@
+## 0.6.0
+
+- Improved latency for high-frequency updates
+
 ## 0.5.2
 
 - Fixed led ordering on some keyboards (see #4). Thanks, @DEREFERENC3D
