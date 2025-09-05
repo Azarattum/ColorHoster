@@ -1,3 +1,7 @@
+## 0.6.1
+
+- Added support for implicit option indexing in VIA json configs
+
 ## 0.6.0
 
 - Improved latency for high-frequency updates
