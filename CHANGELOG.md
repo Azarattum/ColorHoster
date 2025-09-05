@@ -1,6 +1,6 @@
 ## 0.6.1
 
-- Added support for implicit option indexing in VIA json configs
+- Added support for implicit option indexing in VIA json configs. Thanks, @gzowski
 
 ## 0.6.0
 
