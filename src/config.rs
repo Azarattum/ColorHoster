@@ -104,7 +104,13 @@ impl Config {
             })
             .into_iter()
             .flatten()
-            .map(|(name, id)| {
+            .enumerate()
+            .map(|(index, option)| {
+                let (name, id) = match option {
+                    IndexedOption::Explicit((name, id)) => (name, id),
+                    IndexedOption::Implicit(name) => (name, index as i32),
+                };
+
                 let mut flags = controls
                     .iter()
                     .filter(|x| x.is_active(id))
@@ -266,7 +272,7 @@ enum MenuOption {
     #[serde(rename = "dropdown")]
     Dropdown {
         content: Vec<Value>,
-        options: Vec<(String, i32)>,
+        options: Vec<IndexedOption>,
     },
     #[serde(rename = "color")]
     Color {
@@ -283,6 +289,13 @@ enum MenuOption {
     #[allow(dead_code)]
     #[serde(untagged)]
     Other(Value),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum IndexedOption {
+    Explicit((String, i32)),
+    Implicit(String),
 }
 
 #[derive(Debug, Deserialize)]
