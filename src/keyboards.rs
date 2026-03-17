@@ -6,7 +6,7 @@ use indexmap::IndexMap;
 use log::{debug, warn};
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex}
+    sync::{Arc, Mutex},
 };
 use tokio::sync::{
     Mutex as AsyncMutex, MutexGuard,
@@ -34,11 +34,17 @@ impl Keyboards {
         let mut stream = backend.enumerate().await?;
 
         while let Some(device) = stream.next().await {
-            if is_compatible(&device) && let Some(mut config) = configs.remove(&(device.vendor_id, device.product_id)) {
+            if is_compatible(&device)
+                && let Some(mut config) = configs.remove(&(device.vendor_id, device.product_id))
+            {
                 if let Some(manufacturer) = device.manufacturer.clone() {
                     config.vendor = manufacturer;
                 }
-                debug!("Keyboard {} {} connected!", config.vendor.bold().cyan(), config.name.bold().blue());
+                debug!(
+                    "Keyboard {} {} connected!",
+                    config.name.bold().blue(),
+                    format!("({})", config.vendor).bold().cyan()
+                );
                 match Keyboard::from_config(config, device).await {
                     Err(error) => warn!("Failed to initialize keyboard: {error}"),
                     Ok(keyboard) => {
@@ -79,7 +85,11 @@ impl Keyboards {
                                 if let Some(manufacturer) = device.manufacturer.clone() {
                                     config.vendor = manufacturer;
                                 }
-                                debug!("Keyboard {} {} connected!", config.vendor.bold().cyan(), config.name.bold().blue());
+                                debug!(
+                                    "Keyboard {} {} connected!",
+                                    config.name.bold().blue(),
+                                    format!("({})", config.vendor).bold().cyan()
+                                );
                                 match Keyboard::from_config(config, device).await {
                                     Err(error) => warn!("Failed to initialize keyboard: {error}"),
                                     Ok(keyboard) => {
@@ -93,7 +103,11 @@ impl Keyboards {
                         DeviceEvent::Disconnected(id) => {
                             if let Some(device) = keyboards.lock().await.shift_remove(&id) {
                                 let config = device.into_config().await;
-                                debug!("Keyboard {} {} disconnected!", config.vendor.bold().cyan(), config.name.bold().blue());
+                                debug!(
+                                    "Keyboard {} {} disconnected!",
+                                    config.name.bold().blue(),
+                                    format!("({})", config.vendor).bold().cyan()
+                                );
 
                                 configs
                                     .lock()
