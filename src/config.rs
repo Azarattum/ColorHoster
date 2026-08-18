@@ -2,7 +2,6 @@ use anyhow::Result;
 use evalexpr::{
     ContextWithMutableVariables, HashMapContext, Node, Value as EvalValue, build_operator_tree,
 };
-use itertools::Itertools;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -14,6 +13,8 @@ use crate::consts::{
 type Position = (u8, u8);
 type Range = (u32, u32);
 type Effect = (String, i32, u32);
+type LedGrid = Vec<(u8, Position)>;
+type ScanGrid = Vec<(u8, Position)>;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -21,11 +22,19 @@ pub struct Config {
     pub vendor: String,
     pub vendor_id: u16,
     pub product_id: u16,
-    pub leds: Vec<(u8, Position)>,
+    pub leds: LedGrid,
+    pub matrix_pos: ScanGrid,
     pub effects: Vec<Effect>,
     pub speed: Range,
     pub brightness: Range,
     pub matrix: (u32, u32),
+    pub matrix_vis: (u32, u32),
+}
+
+struct LedGeometry {
+    leds: LedGrid,
+    matrix_pos: ScanGrid,
+    matrix_vis: (u32, u32),
 }
 
 impl Config {
@@ -40,6 +49,7 @@ impl Config {
         } = serde_json::from_str(json)?;
 
         let menus = Self::flatten_menus(menus);
+        let geometry = Self::parse_leds(&layouts.keymap);
 
         Ok(Self {
             name,
@@ -47,27 +57,80 @@ impl Config {
             vendor_id: parse_hex(&vendor_id),
             product_id: parse_hex(&product_id),
             matrix: (matrix.cols, matrix.rows),
-            leds: Self::parse_leds(&layouts.keymap),
+            leds: geometry.leds,
+            matrix_pos: geometry.matrix_pos,
+            matrix_vis: geometry.matrix_vis,
             speed: Self::find_range(&menus, "id_qmk_rgb_matrix_effect_speed"),
             brightness: Self::find_range(&menus, "id_qmk_rgb_matrix_brightness"),
             effects: Self::parse_effects(menus),
         })
     }
 
-    fn parse_leds(keymap: &[Vec<KeymapEntry>]) -> Vec<(u8, Position)> {
-        keymap
-            .iter()
-            .flatten()
-            .filter_map(|entry| {
-                if let KeymapEntry::Key(key) = entry {
-                    Some(key)
-                } else {
-                    None
+    fn parse_leds(keymap: &[Vec<KeymapEntry>]) -> LedGeometry {
+        struct RawKey {
+            index: u8,
+            matrix_pos: Position,
+            col_milli: i64,
+            row: i64,
+        }
+        let mut raw: Vec<RawKey> = Vec::new();
+
+        for (row_idx, entries) in keymap.iter().enumerate() {
+            let (mut x, mut y, mut w) = (0.0_f64, 0.0_f64, 1.0_f64);
+
+            for entry in entries {
+                match entry {
+                    KeymapEntry::Other(value) => {
+                        x += value.get("x").and_then(Value::as_f64).unwrap_or(0.0);
+                        y += value.get("y").and_then(Value::as_f64).unwrap_or(0.0);
+                        w = value.get("w").and_then(Value::as_f64).unwrap_or(w);
+                    }
+                    KeymapEntry::Key(key) => {
+                        if let Some((index, matrix_pos)) = extract_led(key) {
+                            raw.push(RawKey {
+                                index,
+                                matrix_pos,
+                                col_milli: (x * 1000.0).round() as i64,
+                                row: (row_idx as f64 + y).round() as i64,
+                            });
+                        }
+                        x += w;
+                        w = 1.0;
+                    }
                 }
-            })
-            .filter_map(extract_led)
-            .sorted()
-            .collect()
+            }
+        }
+        let mut rows: Vec<i64> = raw.iter().map(|k| k.row).collect();
+        rows.sort_unstable();
+        rows.dedup();
+
+        let mut order: Vec<usize> = (0..raw.len()).collect();
+        order.sort_by_key(|&i| (rows.binary_search(&raw[i].row).unwrap(), raw[i].col_milli));
+
+        let mut visual = Vec::with_capacity(raw.len());
+        let mut matrix_pos = Vec::with_capacity(raw.len());
+        let mut last_col_in_row: std::collections::HashMap<u8, i64> = std::collections::HashMap::new();
+        let mut max_col = 0i64;
+
+        for i in order {
+            let k = &raw[i];
+            let row = rows.binary_search(&k.row).unwrap() as u8;
+            let last = last_col_in_row.entry(row).or_insert(-1);
+            let col = ((k.col_milli + 500).div_euclid(1000)).max(*last + 1);
+            *last = col;
+
+            max_col = max_col.max(col);
+            visual.push((k.index, (row, col as u8)));
+            matrix_pos.push((k.index, k.matrix_pos));
+        }
+        visual.sort();
+        matrix_pos.sort();
+
+        LedGeometry {
+            leds: visual,
+            matrix_pos,
+            matrix_vis: (max_col as u32 + 1, rows.len() as u32),
+        }
     }
 
     fn flatten_menus(menus: Vec<Menu>) -> Vec<MenuOption> {
