@@ -1,3 +1,7 @@
+## 0.7.2
+
+- Fixed OpenRGB showing the wrong keyboard shape on some keyboards
+
 ## 0.7.1
 
 - Added support for the vendor flag on OpenRGB clients.
