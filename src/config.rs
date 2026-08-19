@@ -1,4 +1,6 @@
-use anyhow::Result;
+use std::collections::HashSet;
+
+use anyhow::{Result, ensure};
 use evalexpr::{
     ContextWithMutableVariables, HashMapContext, Node, Value as EvalValue, build_operator_tree,
 };
@@ -49,7 +51,7 @@ impl Config {
         } = serde_json::from_str(json)?;
 
         let menus = Self::flatten_menus(menus);
-        let geometry = Self::parse_leds(&layouts.keymap);
+        let geometry = Self::parse_leds(&layouts.keymap)?;
 
         Ok(Self {
             name,
@@ -66,71 +68,93 @@ impl Config {
         })
     }
 
-    fn parse_leds(keymap: &[Vec<KeymapEntry>]) -> LedGeometry {
+    fn parse_leds(keymap: &Value) -> Result<LedGeometry> {
         struct RawKey {
             index: u8,
             matrix_pos: Position,
-            col_milli: i64,
+            col: i64,
             row: i64,
         }
-        let mut raw: Vec<RawKey> = Vec::new();
+        let keyboard: kle_serial::Keyboard = serde_json::from_value(keymap.clone())?;
+        let annotations: Vec<_> = keymap
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_array)
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(extract_led_annotation)
+            .collect();
 
-        for (row_idx, entries) in keymap.iter().enumerate() {
-            let (mut x, mut y, mut w) = (0.0_f64, 0.0_f64, 1.0_f64);
+        ensure!(
+            annotations.len() == keyboard.keys.len(),
+            "KLE parser returned an unexpected number of keys"
+        );
 
-            for entry in entries {
-                match entry {
-                    KeymapEntry::Other(value) => {
-                        x += value.get("x").and_then(Value::as_f64).unwrap_or(0.0);
-                        y += value.get("y").and_then(Value::as_f64).unwrap_or(0.0);
-                        w = value.get("w").and_then(Value::as_f64).unwrap_or(w);
-                    }
-                    KeymapEntry::Key(key) => {
-                        if let Some((index, matrix_pos)) = extract_led(key) {
-                            raw.push(RawKey {
-                                index,
-                                matrix_pos,
-                                col_milli: (x * 1000.0).round() as i64,
-                                row: (row_idx as f64 + y).round() as i64,
-                            });
-                        }
-                        x += w;
-                        w = 1.0;
-                    }
-                }
-            }
+        let raw: Vec<RawKey> = keyboard
+            .keys
+            .iter()
+            .zip(annotations)
+            .filter_map(|(key, annotation)| {
+                let (index, matrix_pos) = annotation?;
+                let (col, row) = project_key(key);
+                Some(RawKey {
+                    index,
+                    matrix_pos,
+                    col,
+                    row,
+                })
+            })
+            .collect();
+
+        if raw.is_empty() {
+            return Ok(LedGeometry {
+                leds: Vec::new(),
+                matrix_pos: Vec::new(),
+                matrix_vis: (0, 0),
+            });
         }
-        let mut rows: Vec<i64> = raw.iter().map(|k| k.row).collect();
-        rows.sort_unstable();
-        rows.dedup();
+
+        let min_row = raw.iter().map(|key| key.row).min().unwrap();
+        let min_col = raw.iter().map(|key| key.col).min().unwrap();
 
         let mut order: Vec<usize> = (0..raw.len()).collect();
-        order.sort_by_key(|&i| (rows.binary_search(&raw[i].row).unwrap(), raw[i].col_milli));
+        order.sort_by_key(|&i| (raw[i].row, raw[i].col, raw[i].index));
 
         let mut visual = Vec::with_capacity(raw.len());
         let mut matrix_pos = Vec::with_capacity(raw.len());
-        let mut last_col_in_row: std::collections::HashMap<u8, i64> = std::collections::HashMap::new();
-        let mut max_col = 0i64;
+        let mut occupied = HashSet::with_capacity(raw.len());
+        let (mut max_row, mut max_col) = (0i64, 0i64);
 
         for i in order {
             let k = &raw[i];
-            let row = rows.binary_search(&k.row).unwrap() as u8;
-            let last = last_col_in_row.entry(row).or_insert(-1);
-            let col = ((k.col_milli + 500).div_euclid(1000)).max(*last + 1);
-            *last = col;
+            let row = k.row - min_row;
+            let mut col = k.col - min_col;
 
+            // Never lose a LED when keys land in the same integer cell
+            while !occupied.insert((row, col)) {
+                col += 1;
+            }
+
+            max_row = max_row.max(row);
             max_col = max_col.max(col);
-            visual.push((k.index, (row, col as u8)));
+
+            ensure!(
+                row <= u8::MAX as i64 && col <= u8::MAX as i64,
+                "KLE layout is too large for the OpenRGB matrix"
+            );
+
+            visual.push((k.index, (row as u8, col as u8)));
             matrix_pos.push((k.index, k.matrix_pos));
         }
         visual.sort();
         matrix_pos.sort();
 
-        LedGeometry {
+        Ok(LedGeometry {
             leds: visual,
             matrix_pos,
-            matrix_vis: (max_col as u32 + 1, rows.len() as u32),
-        }
+            matrix_vis: (max_col as u32 + 1, max_row as u32 + 1),
+        })
     }
 
     fn flatten_menus(menus: Vec<Menu>) -> Vec<MenuOption> {
@@ -291,28 +315,44 @@ fn parse_hex(s: &str) -> u16 {
     u16::from_str_radix(s.trim_start_matches("0x"), 16).unwrap_or(0)
 }
 
-fn extract_led(key: &String) -> Option<(u8, Position)> {
+fn project_key(key: &kle_serial::Key) -> (i64, i64) {
+    let rotation = key.rotation.rem_euclid(360.0);
+    let is_rotated = rotation > 1e-9 && (360.0 - rotation) > 1e-9;
+
+    if is_rotated {
+        let angle = key.rotation.to_radians();
+        let (sin, cos) = angle.sin_cos();
+        let relative_x = key.x + key.width / 2.0 - key.rx;
+        let relative_y = key.y + key.height / 2.0 - key.ry;
+        let x = key.rx + relative_x * cos - relative_y * sin - 0.5;
+        let y = key.ry + relative_x * sin + relative_y * cos - 0.5;
+        (x.round() as i64, y.round() as i64)
+    } else {
+        (key.x.round() as i64, (key.y + 1e-9).floor() as i64)
+    }
+}
+
+fn extract_led_annotation(key: &str) -> Option<(u8, Position)> {
     let mut flags = key.split('\n');
 
-    let position: Vec<_> = flags.nth(0)?.split(',').collect();
-    let row = position[0].trim().parse::<u8>().ok()?;
-    let col = position[1].trim().parse::<u8>().ok()?;
+    let (row_str, col_str) = flags.nth(0)?.split_once(',')?;
+    let row = row_str.trim().parse::<u8>().ok()?;
+    let col = col_str.trim().parse::<u8>().ok()?;
+    let led = parse_marker(flags.next()?, 'l')?;
 
-    let led = flags
-        .nth(0)
-        .and_then(|x| x.strip_prefix("l"))
-        .and_then(|x| x.parse::<u8>().ok())
-        .and_then(|x| {
-            // Skip LEDs for encoder keys
-            if let Some(encoder) = flags.nth(7)
-                && encoder.starts_with("e")
-            {
-                return None;
-            }
-            Some(x)
-        })?;
-
+    // The encoder marker occupies KLE slot 9.
+    if flags
+        .nth(7)
+        .and_then(|legend| parse_marker(legend, 'e'))
+        .is_some()
+    {
+        return None;
+    }
     Some((led, (row, col)))
+}
+
+fn parse_marker(value: &str, prefix: char) -> Option<u8> {
+    value.strip_prefix(prefix)?.parse().ok()
 }
 
 #[derive(Debug, Deserialize)]
@@ -384,13 +424,5 @@ enum IndexedOption {
 
 #[derive(Debug, Deserialize)]
 struct Layouts {
-    keymap: Vec<Vec<KeymapEntry>>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum KeymapEntry {
-    Key(String),
-    #[allow(dead_code)]
-    Other(Value),
+    keymap: Value,
 }

@@ -16,6 +16,7 @@ fern = { version = "0.7.1", features = ["colored"] }
 futures = "0.3.31"
 indexmap = "2.9.0"
 itertools = "0.14.0"
+kle-serial = "0.3.4"
 log = "0.4.26"
 num_enum = "0.7.3"
 palette = "0.7.6"
