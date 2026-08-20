@@ -148,20 +148,20 @@ pub async fn handle(
             buffer.extend_from_slice(&leds_count.to_le_bytes());
             buffer.extend_from_slice(&leds_count.to_le_bytes());
 
-            let matrix_data_size = (config.matrix.0 * config.matrix.1 * 4) + 8;
+            let matrix_data_size = (config.matrix_vis.0 * config.matrix_vis.1 * 4) + 8;
             buffer.extend_from_slice(&(matrix_data_size as u16).to_le_bytes());
-            buffer.extend_from_slice(&config.matrix.1.to_le_bytes());
-            buffer.extend_from_slice(&config.matrix.0.to_le_bytes());
+            buffer.extend_from_slice(&config.matrix_vis.1.to_le_bytes());
+            buffer.extend_from_slice(&config.matrix_vis.0.to_le_bytes());
 
-            let mut led_matrix = vec![0xFFFFFFFF; (config.matrix.0 * config.matrix.1) as usize];
+            let mut led_matrix = vec![0xFFFFFFFF; (config.matrix_vis.0 * config.matrix_vis.1) as usize];
             for &(led, (row, col)) in config.leds.iter() {
-                led_matrix[row as usize * config.matrix.0 as usize + col as usize] = led as u32;
+                led_matrix[row as usize * config.matrix_vis.0 as usize + col as usize] = led as u32;
             }
             buffer.extend_from_u32s(&led_matrix);
 
             buffer.extend_from_slice(&(leds_count as u16).to_le_bytes());
             let keymap = keyboard.keymap().await;
-            for &(led, (row, col)) in config.leds.iter() {
+            for &(led, (row, col)) in config.matrix_pos.iter() {
                 let scancode = keymap[row as usize * config.matrix.0 as usize + col as usize];
                 buffer.extend_from_str(&format!("Key: {}", openrgb_keycode(scancode)));
                 buffer.extend_from_slice(&(led as u32).to_le_bytes());
