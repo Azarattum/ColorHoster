@@ -19,6 +19,7 @@ pub enum Request {
     SetCustomMode = 1100,
     UpdateMode = 1101,
     SaveMode = 1102,
+    UpdateZoneMode = 1103,
 }
 
 pub const OPENRGB_PROTOCOL_VERSION: u32 = 0x3;
