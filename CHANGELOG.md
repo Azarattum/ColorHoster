@@ -1,6 +1,6 @@
 ## 0.7.2
 
-- Fixed OpenRGB showing the wrong keyboard shape on some keyboards
+- Fixed OpenRGB showing the wrong keyboard shape on some keyboards. Thanks, @zzahkaboom24
 
 ## 0.7.1
 
